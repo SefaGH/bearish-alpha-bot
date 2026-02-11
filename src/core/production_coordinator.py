@@ -279,6 +279,15 @@ class ProductionCoordinator:
                 "vol_atr_bps": self._sf(vol_tel.get("atr_bps")),
                 "vol_std_bps": self._sf(vol_tel.get("std_bps")),
             }
+        vsa_shadow = meta.get("vsa_shadow")
+        if isinstance(vsa_shadow, dict):
+            breakdown["vsa_shadow"] = {
+                "selected_class": vsa_shadow.get("selected_class"),
+                "probabilities": vsa_shadow.get("probabilities"),
+                "scores": vsa_shadow.get("scores"),
+                "edge": vsa_shadow.get("edge"),
+                "status": vsa_shadow.get("status"),
+            }
 
         try:
             logger.info(f"SIGNAL_BREAKDOWN {json.dumps(breakdown, default=str)}")

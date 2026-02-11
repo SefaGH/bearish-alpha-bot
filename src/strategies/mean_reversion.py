@@ -473,7 +473,61 @@ class VWAPMeanReversion(BaseStrategy):
         self._reentry_guard_require_vwap_reclaim = bool(
             reentry_cfg.get("require_vwap_reclaim_after_stop", True)
         )
-        self._reentry_guard_by_symbol: Dict[str, bool] = {}
+        short_side_cfg = reentry_cfg.get("short_side", {})
+        if short_side_cfg is not None and not isinstance(short_side_cfg, dict):
+            short_side_cfg = {}
+        short_side_cfg = dict(short_side_cfg) if isinstance(short_side_cfg, dict) else {}
+        self._reentry_guard_short_enabled = bool(short_side_cfg.get("enabled", False))
+        self._reentry_guard_short_clear_on_band_breach = bool(
+            short_side_cfg.get("clear_on_band_breach", True)
+        )
+        try:
+            self._reentry_guard_short_clear_on_z_threshold = float(
+                short_side_cfg.get("clear_on_z_threshold", 0.0) or 0.0
+            )
+        except Exception:
+            self._reentry_guard_short_clear_on_z_threshold = 0.0
+        if (
+            not math.isfinite(self._reentry_guard_short_clear_on_z_threshold)
+            or self._reentry_guard_short_clear_on_z_threshold < 0
+        ):
+            self._reentry_guard_short_clear_on_z_threshold = 0.0
+        self._reentry_guard_long_by_symbol: Dict[str, bool] = {}
+        self._reentry_guard_short_by_symbol: Dict[str, bool] = {}
+
+        # Phase-1 shadow classifier telemetry (no execution impact).
+        vsa_cfg = cfg.get("vsa_shadow", {})
+        if vsa_cfg is not None and not isinstance(vsa_cfg, dict):
+            logger.warning("[MeanReversion] vsa_shadow config must be a dict; using defaults.")
+            vsa_cfg = {}
+        vsa_cfg = dict(vsa_cfg) if isinstance(vsa_cfg, dict) else {}
+        self._vsa_shadow_enabled = bool(vsa_cfg.get("enabled", True))
+        try:
+            self._vsa_shadow_rejection_window = int(vsa_cfg.get("rejection_window", 12) or 12)
+        except Exception:
+            self._vsa_shadow_rejection_window = 12
+        self._vsa_shadow_rejection_window = max(3, int(self._vsa_shadow_rejection_window))
+        try:
+            self._vsa_shadow_z_entry = float(vsa_cfg.get("z_entry", 1.6) or 1.6)
+        except Exception:
+            self._vsa_shadow_z_entry = 1.6
+        try:
+            self._vsa_shadow_z_cap = float(vsa_cfg.get("z_cap", 3.0) or 3.0)
+        except Exception:
+            self._vsa_shadow_z_cap = 3.0
+        if not math.isfinite(self._vsa_shadow_z_entry):
+            self._vsa_shadow_z_entry = 1.6
+        if not math.isfinite(self._vsa_shadow_z_cap):
+            self._vsa_shadow_z_cap = 3.0
+        if self._vsa_shadow_z_cap <= self._vsa_shadow_z_entry:
+            self._vsa_shadow_z_cap = float(self._vsa_shadow_z_entry + 1.4)
+        try:
+            self._vsa_shadow_rr_span = float(vsa_cfg.get("rr_span", 0.5) or 0.5)
+        except Exception:
+            self._vsa_shadow_rr_span = 0.5
+        if not math.isfinite(self._vsa_shadow_rr_span) or self._vsa_shadow_rr_span <= 0:
+            self._vsa_shadow_rr_span = 0.5
+        self._vsa_rejection_pass_hist_by_symbol: Dict[str, list[int]] = {}
 
         if self.vwap_lookback > 1000:
             logger.warning(
@@ -487,7 +541,7 @@ class VWAPMeanReversion(BaseStrategy):
         assert callable(getattr(self, "signal", None)), "MeanReversion: signal method not callable"
         print("MeanReversion: signal method bound successfully")
 
-    def arm_reentry_guard(self, symbol: str) -> None:
+    def arm_reentry_guard(self, symbol: str, side: str = "long") -> None:
         if not self._reentry_guard_enabled:
             return
         try:
@@ -496,7 +550,15 @@ class VWAPMeanReversion(BaseStrategy):
             return
         if not sym:
             return
-        self._reentry_guard_by_symbol[sym] = True
+        try:
+            side_norm = str(side or "long").strip().lower()
+        except Exception:
+            side_norm = "long"
+        if side_norm in {"short", "sell"}:
+            if self._reentry_guard_short_enabled:
+                self._reentry_guard_short_by_symbol[sym] = True
+            return
+        self._reentry_guard_long_by_symbol[sym] = True
 
     async def _ensure_trade_wiring(self, symbol: str) -> None:
         """Ensure BingX @trade subscription + callback registration (best effort, non-fatal)."""
@@ -818,6 +880,396 @@ class VWAPMeanReversion(BaseStrategy):
         if not label:
             return None
         return label
+
+    @staticmethod
+    def _clip01(value: Any, default: float = 0.0) -> float:
+        try:
+            val = float(value)
+        except Exception:
+            val = float(default)
+        if not math.isfinite(val):
+            val = float(default)
+        return max(0.0, min(1.0, float(val)))
+
+    @staticmethod
+    def _safe_sigmoid(value: float) -> float:
+        try:
+            if value >= 0:
+                z = math.exp(-float(value))
+                return 1.0 / (1.0 + z)
+            z = math.exp(float(value))
+            return z / (1.0 + z)
+        except Exception:
+            return 0.5
+
+    def _update_vsa_rejection_history(
+        self,
+        *,
+        symbol: Any,
+        rejection_meta: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        key = ""
+        try:
+            key = str(symbol or "").strip()
+        except Exception:
+            key = ""
+        if not key:
+            return {
+                "rej_pass": None,
+                "pass_rate": 0.0,
+                "has_two_consecutive_passes": False,
+                "window": int(self._vsa_shadow_rejection_window),
+                "history_size": 0,
+            }
+
+        rej_pass: Optional[bool] = None
+        upper_wick_component = 0.0
+        if isinstance(rejection_meta, dict):
+            try:
+                has_red = bool(rejection_meta.get("has_red"))
+                close_back_inside = bool(rejection_meta.get("close_back_inside_band"))
+                upper_wick_ratio = self._coerce_finite_float(rejection_meta.get("upper_wick_ratio"))
+                wick_thr = self._coerce_finite_float(rejection_meta.get("threshold_wick_ratio"))
+                if wick_thr is None or not math.isfinite(float(wick_thr)) or wick_thr <= 0:
+                    wick_thr = 0.8
+                if upper_wick_ratio is None or not math.isfinite(float(upper_wick_ratio)):
+                    upper_wick_ratio = 0.0
+                rej_pass = bool(has_red and (close_back_inside or float(upper_wick_ratio) >= float(wick_thr)))
+                upper_wick_component = self._clip01(float(upper_wick_ratio) / 0.8, default=0.0)
+            except Exception:
+                rej_pass = None
+                upper_wick_component = 0.0
+
+        hist = self._vsa_rejection_pass_hist_by_symbol.setdefault(key, [])
+        if rej_pass is not None:
+            hist.append(1 if rej_pass else 0)
+            max_len = max(3, int(self._vsa_shadow_rejection_window))
+            if len(hist) > max_len:
+                del hist[:-max_len]
+
+        pass_rate = (float(sum(hist)) / float(len(hist))) if hist else 0.0
+        has_two = bool(len(hist) >= 2 and hist[-1] == 1 and hist[-2] == 1)
+        return {
+            "rej_pass": rej_pass,
+            "pass_rate": self._clip01(pass_rate, default=0.0),
+            "has_two_consecutive_passes": has_two,
+            "window": int(self._vsa_shadow_rejection_window),
+            "history_size": int(len(hist)),
+            "upper_wick_component": self._clip01(upper_wick_component, default=0.0),
+        }
+
+    def _compute_vsa_shadow_meta(
+        self,
+        *,
+        symbol: Any,
+        side: str,
+        clean_vwap: Optional[pd.DataFrame],
+        regime_data: Optional[Dict[str, Any]],
+        adx_val: Optional[float],
+        atr_val: Optional[float],
+        z_val: Optional[float],
+        volume_analysis: Optional[Dict[str, Any]],
+        reward_bps: Optional[float],
+        risk_bps: Optional[float],
+        rejection_shadow: Optional[Dict[str, Any]],
+        timeframe_hint: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not bool(getattr(self, "_vsa_shadow_enabled", True)):
+            return None
+
+        if clean_vwap is None or not isinstance(clean_vwap, pd.DataFrame) or clean_vwap.empty:
+            return {
+                "enabled": True,
+                "status": "insufficient_data",
+                "reason": "missing_clean_vwap",
+            }
+
+        side_norm = str(side or "").strip().lower()
+        if side_norm in {"sell", "short"}:
+            side_norm = "short"
+        elif side_norm in {"buy", "long"}:
+            side_norm = "long"
+        else:
+            side_norm = "unknown"
+
+        # --- Impulse I ---
+        last_close = prev_close = None
+        high_last = low_last = None
+        try:
+            close_series = pd.to_numeric(clean_vwap["close"], errors="coerce").dropna()
+            if len(close_series) >= 1:
+                last_close = float(close_series.iloc[-1])
+            if len(close_series) >= 2:
+                prev_close = float(close_series.iloc[-2])
+        except Exception:
+            pass
+        try:
+            high_series = pd.to_numeric(clean_vwap["high"], errors="coerce").dropna()
+            low_series = pd.to_numeric(clean_vwap["low"], errors="coerce").dropna()
+            if len(high_series) >= 1 and len(low_series) >= 1:
+                high_last = float(high_series.iloc[-1])
+                low_last = float(low_series.iloc[-1])
+        except Exception:
+            pass
+
+        r_abs = None
+        if last_close is not None and prev_close is not None and prev_close > 0:
+            try:
+                r_abs = abs((float(last_close) - float(prev_close)) / float(prev_close))
+            except Exception:
+                r_abs = None
+
+        tr_last = None
+        if high_last is not None and low_last is not None:
+            if prev_close is not None:
+                try:
+                    tr_last = max(
+                        float(high_last) - float(low_last),
+                        abs(float(high_last) - float(prev_close)),
+                        abs(float(low_last) - float(prev_close)),
+                    )
+                except Exception:
+                    tr_last = None
+            else:
+                try:
+                    tr_last = max(0.0, float(high_last) - float(low_last))
+                except Exception:
+                    tr_last = None
+
+        atr_ref = self._coerce_finite_float(atr_val)
+        if atr_ref is None:
+            try:
+                if "atr" in clean_vwap.columns:
+                    atr_series = pd.to_numeric(clean_vwap["atr"], errors="coerce").dropna()
+                    if not atr_series.empty:
+                        atr_ref = float(atr_series.iloc[-1])
+            except Exception:
+                atr_ref = None
+        if atr_ref is not None and (not math.isfinite(float(atr_ref)) or float(atr_ref) <= 0):
+            atr_ref = None
+
+        vr_ratio = None
+        if isinstance(volume_analysis, dict):
+            try:
+                local_ctx = volume_analysis.get("local")
+                if isinstance(local_ctx, dict):
+                    vr_ratio = self._coerce_finite_float(local_ctx.get("ratio_recent_to_baseline"))
+            except Exception:
+                vr_ratio = None
+            if vr_ratio is None:
+                try:
+                    vol_strength = self._coerce_finite_float(volume_analysis.get("volume_strength"))
+                    if vol_strength is not None and math.isfinite(float(vol_strength)):
+                        vr_ratio = max(0.0, float(vol_strength) * 2.0)
+                except Exception:
+                    vr_ratio = None
+
+        impulse_components: Dict[str, float] = {}
+        if r_abs is not None:
+            impulse_components["ret"] = self._clip01(float(r_abs) / 0.0025, default=0.0)
+        if tr_last is not None and atr_ref is not None and atr_ref > 0:
+            impulse_components["tr_atr"] = self._clip01(float(tr_last) / (2.5 * float(atr_ref)), default=0.0)
+        if vr_ratio is not None:
+            impulse_components["vr"] = self._clip01(float(vr_ratio) / 2.0, default=0.0)
+        impulse_score = max(impulse_components.values()) if impulse_components else 0.0
+        impulse_score = self._clip01(impulse_score, default=0.0)
+
+        # --- Trend T (directional alignment) ---
+        adx_coord = None
+        if isinstance(regime_data, dict):
+            adx_coord = self._coerce_finite_float(regime_data.get("trend_strength"))
+            if adx_coord is None:
+                adx_coord = self._coerce_finite_float(regime_data.get("adx"))
+        if adx_coord is None:
+            adx_coord = self._coerce_finite_float(adx_val)
+        trend_core = 0.0
+        if adx_coord is not None:
+            trend_core = self._clip01((float(adx_coord) - 25.0) / 20.0, default=0.0)
+
+        slope_raw = None
+        slope_source = "none"
+        try:
+            if "vwap" in clean_vwap.columns and len(clean_vwap) >= 2:
+                vwap_series = pd.to_numeric(clean_vwap["vwap"], errors="coerce").dropna()
+                if len(vwap_series) >= 2:
+                    slope_raw = float(vwap_series.iloc[-1]) - float(vwap_series.iloc[-2])
+                    slope_source = "vwap"
+        except Exception:
+            slope_raw = None
+            slope_source = "none"
+        if slope_raw is None:
+            try:
+                if "ema50" in clean_vwap.columns and len(clean_vwap) >= 2:
+                    ema_series = pd.to_numeric(clean_vwap["ema50"], errors="coerce").dropna()
+                    if len(ema_series) >= 2:
+                        slope_raw = float(ema_series.iloc[-1]) - float(ema_series.iloc[-2])
+                        slope_source = "ema50"
+            except Exception:
+                slope_raw = None
+                slope_source = "none"
+        slope_align = 0.0
+        if slope_raw is not None and math.isfinite(float(slope_raw)):
+            if side_norm == "short":
+                slope_align = 1.0 if float(slope_raw) > 0 else 0.0
+            elif side_norm == "long":
+                slope_align = 1.0 if float(slope_raw) < 0 else 0.0
+        trend_score = self._clip01(float(trend_core) * float(slope_align), default=0.0)
+
+        # --- Rejection R (with persistency penalty) ---
+        pass_rate = 0.0
+        has_two_consecutive = False
+        upper_wick_component = 0.0
+        if isinstance(rejection_shadow, dict):
+            pass_rate = self._clip01(rejection_shadow.get("pass_rate"), default=0.0)
+            has_two_consecutive = bool(rejection_shadow.get("has_two_consecutive_passes", False))
+            upper_wick_component = self._clip01(rejection_shadow.get("upper_wick_component"), default=0.0)
+        rejection_raw = self._clip01((0.7 * pass_rate) + (0.3 * upper_wick_component), default=0.0)
+        rejection_score = rejection_raw if has_two_consecutive else self._clip01(0.6 * rejection_raw, default=0.0)
+
+        # --- Acceptance A (time above/below VWAP for recent hold) ---
+        tf_ms = self._parse_timeframe_ms(str(timeframe_hint or self.vwap_tf))
+        tf_seconds = max(1.0, float(tf_ms) / 1000.0)
+        hold_seconds = 0.0
+        acceptance_base = 0.0
+        bars_in_120s = max(1, int(math.ceil(120.0 / tf_seconds)))
+        try:
+            if {"close", "vwap"}.issubset(set(clean_vwap.columns)):
+                sub = clean_vwap.tail(max(2, bars_in_120s))
+                close_vals = pd.to_numeric(sub["close"], errors="coerce").tolist()
+                vwap_vals = pd.to_numeric(sub["vwap"], errors="coerce").tolist()
+                streak = 0
+                for idx in range(len(close_vals) - 1, -1, -1):
+                    c = close_vals[idx]
+                    v = vwap_vals[idx]
+                    if c is None or v is None:
+                        break
+                    try:
+                        c = float(c)
+                        v = float(v)
+                    except Exception:
+                        break
+                    if not math.isfinite(c) or not math.isfinite(v):
+                        break
+                    if side_norm == "short":
+                        cond = c > v
+                    elif side_norm == "long":
+                        cond = c < v
+                    else:
+                        cond = False
+                    if not cond:
+                        break
+                    streak += 1
+                hold_seconds = min(120.0, float(streak) * float(tf_seconds))
+                acceptance_base = self._clip01(float(hold_seconds) / 120.0, default=0.0)
+        except Exception:
+            hold_seconds = 0.0
+            acceptance_base = 0.0
+        acceptance_score = self._clip01(float(acceptance_base) * (1.0 - float(rejection_score)), default=0.0)
+
+        # --- z normalization ---
+        abs_z = 0.0
+        z_raw = self._coerce_finite_float(z_val)
+        if z_raw is not None:
+            abs_z = abs(float(z_raw))
+        z_entry = float(self._vsa_shadow_z_entry)
+        z_cap = float(self._vsa_shadow_z_cap)
+        z_norm = self._clip01((float(abs_z) - z_entry) / max(1e-9, (z_cap - z_entry)), default=0.0)
+
+        s_ba = (1.2 * impulse_score) + (1.0 * trend_score) + (0.8 * acceptance_score) - (1.0 * rejection_score)
+        s_go = (1.0 * rejection_score) + (0.8 * z_norm) - (1.0 * impulse_score) - (0.8 * trend_score)
+        s_fr = (1.0 * impulse_score) + (1.2 * rejection_score) - (1.0 * acceptance_score)
+
+        # Softmax with numerical stabilization.
+        max_s = max(s_ba, s_go, s_fr)
+        try:
+            exp_ba = math.exp(s_ba - max_s)
+            exp_go = math.exp(s_go - max_s)
+            exp_fr = math.exp(s_fr - max_s)
+            denom = exp_ba + exp_go + exp_fr
+            if denom <= 0 or not math.isfinite(denom):
+                p_ba = p_go = p_fr = (1.0 / 3.0)
+            else:
+                p_ba = exp_ba / denom
+                p_go = exp_go / denom
+                p_fr = exp_fr / denom
+        except Exception:
+            p_ba = p_go = p_fr = (1.0 / 3.0)
+
+        probs = {"BA": float(p_ba), "GO": float(p_go), "FR": float(p_fr)}
+        selected_class = max(probs, key=probs.get)
+        p_selected = float(probs[selected_class])
+
+        # E = p_selected * Q * M (shadow-only approximation).
+        quality_raw = 0.60  # neutral fallback before coordinator quality scoring.
+        quality_source = "neutral_fallback"
+        q_in = self._coerce_finite_float(quality_raw)
+        q_comp = self._clip01((float(q_in) - 0.50) / 0.20, default=0.5) if q_in is not None else 0.5
+
+        rr_ratio = None
+        rb = self._coerce_finite_float(reward_bps)
+        rk = self._coerce_finite_float(risk_bps)
+        if rb is not None and rk is not None and float(rk) > 0:
+            rr_ratio = float(rb) / float(rk)
+        rr_min = self._coerce_finite_float(self.min_rr_ratio)
+        if rr_min is None:
+            rr_min = 1.0
+        rr_span = float(self._vsa_shadow_rr_span)
+        rr_deficit = 0.0
+        if rr_ratio is not None:
+            rr_deficit = max(0.0, float(rr_min) - float(rr_ratio))
+        pen_rr = self._clip01(float(rr_deficit) / float(rr_span), default=0.0)
+        m_rr = 1.0 - pen_rr
+        m_fill = 1.0  # pre-fill signal stage
+        m_comp = self._clip01(float(m_fill) * float(m_rr), default=1.0)
+
+        edge_e = self._clip01(float(p_selected) * float(q_comp) * float(m_comp), default=0.0)
+        risk_mult = self._clip01(self._safe_sigmoid(8.0 * (float(edge_e) - 0.55)), default=0.1)
+        risk_mult = max(0.1, min(1.0, float(risk_mult)))
+
+        return {
+            "enabled": True,
+            "status": "ok",
+            "inputs": {
+                "side": side_norm,
+                "timeframe": str(timeframe_hint or self.signal_tf),
+                "symbol": str(symbol) if symbol is not None else None,
+                "rejection_window": int(self._vsa_shadow_rejection_window),
+                "z_entry": float(z_entry),
+                "z_cap": float(z_cap),
+                "rr_span": float(rr_span),
+            },
+            "scores": {
+                "I": float(impulse_score),
+                "T": float(trend_score),
+                "A": float(acceptance_score),
+                "R": float(rejection_score),
+                "z_norm": float(z_norm),
+            },
+            "probabilities": probs,
+            "selected_class": str(selected_class),
+            "edge": {
+                "E": float(edge_e),
+                "Q": float(q_comp),
+                "M": float(m_comp),
+                "M_fill": float(m_fill),
+                "M_rr": float(m_rr),
+                "RR": float(rr_ratio) if rr_ratio is not None else None,
+                "RR_min": float(rr_min),
+                "risk_mult_shadow": float(risk_mult),
+                "quality_source": quality_source,
+            },
+            "diagnostics": {
+                "impulse_components": impulse_components,
+                "rejection_pass_rate": float(pass_rate),
+                "rejection_persistency_ok": bool(has_two_consecutive),
+                "hold_seconds_vwap": float(hold_seconds),
+                "trend_adx_coord": float(adx_coord) if adx_coord is not None else None,
+                "trend_core": float(trend_core),
+                "trend_slope_source": slope_source,
+                "trend_slope_raw": float(slope_raw) if slope_raw is not None else None,
+                "upper_wick_component": float(upper_wick_component),
+            },
+        }
 
     @staticmethod
     def _symbol_rollout_keys(symbol: Any) -> set[str]:
@@ -1812,23 +2264,53 @@ class VWAPMeanReversion(BaseStrategy):
             float(eff_adx_threshold) if math.isfinite(eff_adx_threshold) else float("nan"),
             adx_decision_reason,
         )
-        reentry_guard_active = False
+        reentry_guard_long_active = False
+        reentry_guard_short_active = False
         if self._reentry_guard_enabled and self._reentry_guard_require_vwap_reclaim:
             try:
                 guard_key = str(symbol)
             except Exception:
                 guard_key = ""
-            if guard_key and self._reentry_guard_by_symbol.get(guard_key):
+            if guard_key and self._reentry_guard_long_by_symbol.get(guard_key):
                 if price > vwap_target:
-                    self._reentry_guard_by_symbol.pop(guard_key, None)
+                    self._reentry_guard_long_by_symbol.pop(guard_key, None)
                     logger.info(
-                        "[MeanReversion] Reentry guard cleared %s: price %.4f > vwap %.4f",
+                        "[MeanReversion] Reentry LONG guard cleared %s: price %.4f > vwap %.4f",
                         symbol,
                         float(price),
                         float(vwap_target),
                     )
                 else:
-                    reentry_guard_active = True
+                    reentry_guard_long_active = True
+        if self._reentry_guard_enabled and self._reentry_guard_short_enabled:
+            try:
+                guard_key = str(symbol)
+            except Exception:
+                guard_key = ""
+            if guard_key and self._reentry_guard_short_by_symbol.get(guard_key):
+                clear_reasons = []
+                if (
+                    self._reentry_guard_short_clear_on_band_breach
+                    and upper is not None
+                    and math.isfinite(float(upper))
+                    and price > float(upper)
+                ):
+                    clear_reasons.append("band_breach")
+                z_thr = float(self._reentry_guard_short_clear_on_z_threshold)
+                if z_thr > 0 and z_val is not None and math.isfinite(float(z_val)) and abs(float(z_val)) >= z_thr:
+                    clear_reasons.append("z_threshold")
+                if clear_reasons:
+                    self._reentry_guard_short_by_symbol.pop(guard_key, None)
+                    logger.info(
+                        "[MeanReversion] Reentry SHORT guard cleared %s: reasons=%s price=%.4f upper=%.4f z=%s",
+                        symbol,
+                        "|".join(clear_reasons),
+                        float(price),
+                        float(upper) if upper is not None and math.isfinite(float(upper)) else float("nan"),
+                        f"{float(z_val):.3f}" if z_val is not None and math.isfinite(float(z_val)) else "nan",
+                    )
+                else:
+                    reentry_guard_short_active = True
 
         entry_long = price < lower and adx_ok
         entry_short = price > upper and adx_ok
@@ -2046,6 +2528,11 @@ class VWAPMeanReversion(BaseStrategy):
                         rejection_meta["enforced"] = False
                     else:
                         return None
+
+        rejection_shadow = self._update_vsa_rejection_history(
+            symbol=symbol,
+            rejection_meta=rejection_meta if isinstance(rejection_meta, dict) else None,
+        )
 
         if in_band and not (entry_long or entry_short) and not touch_entry_allowed and not promotion_override:
             if parent_pending_id:
@@ -2291,9 +2778,9 @@ class VWAPMeanReversion(BaseStrategy):
             )
             return None
 
-        if entry_long and reentry_guard_active:
+        if entry_long and reentry_guard_long_active:
             logger.info(
-                "[MeanReversion] Reentry guard veto %s: price %.4f <= vwap %.4f",
+                "[MeanReversion] Reentry LONG guard veto %s: price %.4f <= vwap %.4f",
                 symbol,
                 float(price),
                 float(vwap_target),
@@ -2309,6 +2796,28 @@ class VWAPMeanReversion(BaseStrategy):
                 vwap_std=vwap_std_val,
                 z=z_val,
                 side_value="long",
+            )
+            return None
+
+        if entry_short and reentry_guard_short_active:
+            logger.info(
+                "[MeanReversion] Reentry SHORT guard veto %s: waiting clear conditions (price=%.4f upper=%.4f z=%s)",
+                symbol,
+                float(price),
+                float(upper) if upper is not None and math.isfinite(float(upper)) else float("nan"),
+                f"{float(z_val):.3f}" if z_val is not None and math.isfinite(float(z_val)) else "nan",
+            )
+            _emit_recheck_eval(
+                action="HOLD",
+                gate_reasons=["reentry_guard_short"],
+                px=price,
+                px_source=px_source,
+                lower=lower,
+                upper=upper,
+                vwap=vwap_target,
+                vwap_std=vwap_std_val,
+                z=z_val,
+                side_value="short",
             )
             return None
 
@@ -2860,6 +3369,21 @@ class VWAPMeanReversion(BaseStrategy):
             signal["rsi_val"] = guard_rsi_val
             signal["z_score_val"] = z_val
 
+        vsa_shadow_meta = self._compute_vsa_shadow_meta(
+            symbol=symbol,
+            side=side,
+            clean_vwap=clean_vwap if isinstance(clean_vwap, pd.DataFrame) else None,
+            regime_data=regime_data if isinstance(regime_data, dict) else None,
+            adx_val=adx_val,
+            atr_val=atr_val,
+            z_val=z_val,
+            volume_analysis=volume_analysis if isinstance(volume_analysis, dict) else None,
+            reward_bps=reward_bps,
+            risk_bps=risk_bps,
+            rejection_shadow=rejection_shadow if isinstance(rejection_shadow, dict) else None,
+            timeframe_hint=self.vwap_tf,
+        )
+
         meta_data = signal.get("meta", {})
         if not isinstance(meta_data, dict):
             meta_data = {}
@@ -2875,6 +3399,8 @@ class VWAPMeanReversion(BaseStrategy):
             meta_data.setdefault("shock_score", shock_score)
         if isinstance(volume_analysis, dict):
             meta_data["volume_analysis"] = volume_analysis
+        if isinstance(vsa_shadow_meta, dict):
+            meta_data["vsa_shadow"] = vsa_shadow_meta
         if is_recheck or bool(promote_override_meta.get("candidate")):
             meta_data["promotion_override"] = dict(promote_override_meta)
         meta_data.setdefault(

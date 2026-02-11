@@ -115,6 +115,10 @@ risk:
   
   # Safety limits
   min_stop_pct: 0.001                 # Override with: MIN_STOP_PCT ; Override with: RISK_MIN_STOP_PCT
+  min_stop_atr_floor:
+    enabled: true                     # ATR tabanini min-stop hesaplamasina dahil et
+    atr_mult: 0.80                    # min_stop_ratio >= atr_pct * atr_mult
+    canary_symbols: []                # [] veya ["*"] => tum semboller; liste verilirse sadece canary sembollerde aktif
   
   # Daily trade limit (static cap)
   daily_max_trades: 20                # Override with: DAILY_MAX_TRADES
@@ -960,7 +964,7 @@ strategies:
     rejection_confirmation:
       enabled: true
       upper_wick_ratio_min: 0.8
-      recheck_mode: "observe"   # Override with: STRATEGIES__MEAN_REVERSION__REJECTION_CONFIRMATION__RECHECK_MODE ; observe | enforce | off ; Stage-1 default: telemetry-only on recheck
+      recheck_mode: "enforce"   # Override with: STRATEGIES__MEAN_REVERSION__REJECTION_CONFIRMATION__RECHECK_MODE ; observe | enforce | off ; Phase-1 default: enforce on recheck
     adx_threshold: 34.0
     regime_policy:
       enabled: true
@@ -974,18 +978,28 @@ strategies:
         rising_adx_lookback: 3
         adx_floor: 25
       trend_up:
-        short_mode: "off"            # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__SHORT_MODE ; off | disabled | size_mult | extreme_only (alias: confirmed_only)
+        short_mode: "extreme_only"   # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__SHORT_MODE ; off | disabled | size_mult | extreme_only (alias: confirmed_only)
         adx_floor: 25                # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__ADX_FLOOR
         size_mult: 0.5               # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__SIZE_MULT ; used when short_mode=size_mult
         extreme_z_min: 2.5           # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__EXTREME_Z_MIN ; used when short_mode=extreme_only
       shock:
         long_mode: "disabled"
-        short_mode: "off"            # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__SHOCK__SHORT_MODE ; off | disabled ; opt-in short-side shock veto
+        short_mode: "disabled"       # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__SHOCK__SHORT_MODE ; off | disabled ; Phase-1 default: short-side shock veto enabled
         state: "ARMED"
         min_score: 0.60
+    vsa_shadow:
+      enabled: true
+      rejection_window: 12
+      z_entry: 1.6
+      z_cap: 3.0
+      rr_span: 0.5
     reentry_guard:
       enabled: true
       require_vwap_reclaim_after_stop: true
+      short_side:
+        enabled: true
+        clear_on_band_breach: true
+        clear_on_z_threshold: 2.0
     high_adx_z_threshold: 1.90
     adx_slope_lookback: 5
     adx_slope_eps: 0.2

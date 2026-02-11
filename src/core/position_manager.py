@@ -1686,7 +1686,37 @@ class AdvancedPositionManager:
             spread_bps = self._safe_float(meta.get("spread_bps"))
         spread_ratio = (spread_bps / 10000.0) if spread_bps is not None else None
 
-        atr_floor = (atr_pct * 0.8) if atr_pct is not None else None
+        cfg = self.portfolio_manager.cfg if hasattr(self.portfolio_manager, "cfg") else {}
+        risk_cfg = cfg.get("risk", {}) if isinstance(cfg, dict) else {}
+        atr_floor_cfg = risk_cfg.get("min_stop_atr_floor", {}) if isinstance(risk_cfg, dict) else {}
+        atr_floor_enabled = True
+        atr_floor_mult = 0.8
+        canary_symbols_raw = []
+        if isinstance(atr_floor_cfg, dict):
+            atr_floor_enabled = bool(atr_floor_cfg.get("enabled", True))
+            atr_floor_mult = self._safe_float(atr_floor_cfg.get("atr_mult"), 0.8) or 0.8
+            canary_symbols_raw = atr_floor_cfg.get("canary_symbols", [])
+        if not math.isfinite(float(atr_floor_mult)) or float(atr_floor_mult) <= 0:
+            atr_floor_mult = 0.8
+
+        canary_symbols: list[str] = []
+        if isinstance(canary_symbols_raw, list):
+            for raw_symbol in canary_symbols_raw:
+                normalized = str(raw_symbol or "").strip().upper()
+                if normalized:
+                    canary_symbols.append(normalized)
+        elif isinstance(canary_symbols_raw, str):
+            normalized = str(canary_symbols_raw or "").strip().upper()
+            if normalized:
+                canary_symbols.append(normalized)
+
+        symbol_value = str(signal.get("symbol") or "").strip().upper() if isinstance(signal, dict) else ""
+        canary_match = True
+        if canary_symbols and "*" not in canary_symbols:
+            canary_match = bool(symbol_value and symbol_value in set(canary_symbols))
+
+        atr_floor_active = bool(atr_floor_enabled and canary_match)
+        atr_floor = (atr_pct * float(atr_floor_mult)) if atr_floor_active and atr_pct is not None else None
         floor_candidates = {
             "min_stop_pct": min_stop_pct,
             "atr_floor": atr_floor,
@@ -1707,6 +1737,10 @@ class AdvancedPositionManager:
             "min_stop_pct": min_stop_pct,
             "atr_pct": atr_pct,
             "atr_floor": atr_floor,
+            "atr_floor_mult": float(atr_floor_mult),
+            "atr_floor_enabled": bool(atr_floor_enabled),
+            "atr_floor_active": bool(atr_floor_active),
+            "atr_floor_canary_match": bool(canary_match),
             "spread_bps": spread_bps,
             "spread_ratio": spread_ratio,
             "floor_candidates": floor_candidates_clean if floor_candidates_clean else None,
@@ -1796,6 +1830,10 @@ class AdvancedPositionManager:
                 "min_stop_pct": min_meta.get("min_stop_pct"),
                 "atr_pct": min_meta.get("atr_pct"),
                 "atr_floor": min_meta.get("atr_floor"),
+                "atr_floor_mult": min_meta.get("atr_floor_mult"),
+                "atr_floor_enabled": min_meta.get("atr_floor_enabled"),
+                "atr_floor_active": min_meta.get("atr_floor_active"),
+                "atr_floor_canary_match": min_meta.get("atr_floor_canary_match"),
                 "spread_bps": min_meta.get("spread_bps"),
                 "spread_ratio": min_meta.get("spread_ratio"),
                 "min_stop_applied": min_applied,

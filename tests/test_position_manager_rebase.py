@@ -22,9 +22,10 @@ class DummyRiskManager:
 
 
 class DummyPortfolioManager:
-    def __init__(self):
+    def __init__(self, cfg=None):
         self.trade_count = 0
         self.registered = {}
+        self.cfg = cfg or {}
 
     def increment_trade_count(self):
         self.trade_count += 1
@@ -62,9 +63,9 @@ class DummyExchangeClient:
         return {"id": f"new_{len(self.calls)}"}
 
 
-def make_manager(min_stop_pct=None):
+def make_manager(min_stop_pct=None, cfg=None):
     risk_manager = DummyRiskManager(min_stop_pct=min_stop_pct)
-    portfolio_manager = DummyPortfolioManager()
+    portfolio_manager = DummyPortfolioManager(cfg=cfg)
     manager = AdvancedPositionManager(
         risk_manager=risk_manager,
         order_manager=object(),
@@ -165,6 +166,84 @@ async def test_episode_c_rebase_rr_effective_computed():
     meta = result["position"]["rebase_meta"]
 
     assert meta["rr_effective"] == pytest.approx(2.0, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_episode_c_rebase_atr_floor_clamp_short():
+    manager, _ = make_manager(
+        min_stop_pct=None,
+        cfg={
+            "risk": {
+                "min_stop_atr_floor": {
+                    "enabled": True,
+                    "atr_mult": 1.5,
+                    "canary_symbols": ["*"],
+                }
+            }
+        },
+    )
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "sell",
+        "entry": 100.0,
+        "stop": 100.2,  # 0.2%
+        "target": 98.0,
+        "atr": 2.0,  # atr_pct=2%, floor=3%
+    }
+    execution_result = {
+        "success": True,
+        "avg_price": 100.0,
+        "filled_amount": 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    position = result["position"]
+    meta = position["rebase_meta"]
+
+    assert meta["atr_floor_active"] is True
+    assert meta["atr_floor"] == pytest.approx(0.03, rel=1e-6)
+    assert meta["min_stop_applied"] is True
+    assert meta["applied_stop_ratio"] == pytest.approx(0.03, rel=1e-6)
+    assert meta["floor_selected"] == "atr_floor"
+    assert position["stop_loss"] == pytest.approx(103.0, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_episode_c_rebase_atr_floor_canary_miss_keeps_raw_stop():
+    manager, _ = make_manager(
+        min_stop_pct=None,
+        cfg={
+            "risk": {
+                "min_stop_atr_floor": {
+                    "enabled": True,
+                    "atr_mult": 2.0,
+                    "canary_symbols": ["ETH/USDT:USDT"],
+                }
+            }
+        },
+    )
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "sell",
+        "entry": 100.0,
+        "stop": 100.2,  # 0.2%
+        "target": 98.0,
+        "atr": 5.0,  # would imply huge floor if canary matched
+    }
+    execution_result = {
+        "success": True,
+        "avg_price": 100.0,
+        "filled_amount": 1.0,
+    }
+
+    result = await manager.open_position(signal, execution_result)
+    meta = result["position"]["rebase_meta"]
+
+    assert meta["atr_floor_active"] is False
+    assert meta["atr_floor_canary_match"] is False
+    assert meta["atr_floor"] is None
+    assert meta["applied_stop_ratio"] == pytest.approx(0.002, rel=1e-6)
+    assert meta["floor_selected"] == "calculated"
 
 
 @pytest.mark.asyncio

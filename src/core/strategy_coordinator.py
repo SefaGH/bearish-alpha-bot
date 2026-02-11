@@ -1159,9 +1159,9 @@ class StrategyCoordinator:
             if not strategy_name or not symbol or not side:
                 return
 
-            # MeanReversion reentry guard (VWAP reclaim after stop-loss on longs)
+            # MeanReversion reentry guard (long/short stop-loss reentry protection)
             try:
-                if str(strategy_name).strip().lower() == "mean_reversion" and side == "long":
+                if str(strategy_name).strip().lower() == "mean_reversion" and side in {"long", "short"}:
                     pm = getattr(self, "portfolio_manager", None)
                     strategies = getattr(pm, "strategies", None) if pm is not None else None
                     if isinstance(strategies, dict):
@@ -1173,9 +1173,9 @@ class StrategyCoordinator:
                                 mr_instance = instance
                                 break
                         if mr_instance and hasattr(mr_instance, "arm_reentry_guard"):
-                            mr_instance.arm_reentry_guard(str(symbol))
+                            mr_instance.arm_reentry_guard(str(symbol), side=side)
                             logger.info(
-                                "[MR-GUARD] Armed VWAP reclaim guard | strategy=%s symbol=%s side=%s",
+                                "[MR-GUARD] Armed reentry guard | strategy=%s symbol=%s side=%s",
                                 strategy_name,
                                 symbol,
                                 side,
@@ -6009,6 +6009,15 @@ class StrategyCoordinator:
                 "vol_yz_bps": _sf(vol_tel.get("yz_bps")),
                 "vol_atr_bps": _sf(vol_tel.get("atr_bps")),
                 "vol_std_bps": _sf(vol_tel.get("std_bps")),
+            }
+        vsa_shadow = meta.get("vsa_shadow")
+        if isinstance(vsa_shadow, dict):
+            breakdown["vsa_shadow"] = {
+                "selected_class": vsa_shadow.get("selected_class"),
+                "probabilities": vsa_shadow.get("probabilities"),
+                "scores": vsa_shadow.get("scores"),
+                "edge": vsa_shadow.get("edge"),
+                "status": vsa_shadow.get("status"),
             }
         logger.info(f"SIGNAL_BREAKDOWN {json.dumps(breakdown)}")
 
