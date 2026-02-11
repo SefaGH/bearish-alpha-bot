@@ -32,6 +32,7 @@ import argparse
 import time
 import inspect
 import json
+import html
 from datetime import datetime, timezone
 import signal
 import functools
@@ -1084,6 +1085,13 @@ class LiveTradingLauncher:
         # 4. Diğer tüm başlangıç değişkenlerini boş olarak başlat
         self.coordinator = None
         self.telegram = None
+        self.telegram_notify_level = self._normalize_telegram_notify_level(
+            os.getenv("TELEGRAM_NOTIFY_LEVEL", "normal")
+        )
+        self.telegram_trade_notifications_enabled = self._env_flag(
+            "TELEGRAM_NOTIFY_TRADES",
+            default=True
+        )
         self.exchange_clients = {}
         self.strategies = {}
         self.restart_manager = None
@@ -1121,6 +1129,198 @@ class LiveTradingLauncher:
             logger.info(f"Trading Pairs ({len(self.TRADING_PAIRS)}): {', '.join(self.TRADING_PAIRS)}")
         else:
             logger.warning("⚠️ No trading pairs configured! This will likely cause an error.")
+
+    @staticmethod
+    def _env_flag(name: str, *, default: bool = False) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_telegram_notify_level(raw: Any) -> str:
+        level = str(raw or "").strip().lower()
+        if level not in {"critical", "normal", "verbose"}:
+            return "normal"
+        return level
+
+    @staticmethod
+    def _fmt_num(value: Any, decimals: int = 4) -> str:
+        try:
+            return f"{float(value):.{decimals}f}"
+        except (TypeError, ValueError):
+            return "N/A"
+
+    @staticmethod
+    def _fmt_signed_num(value: Any, decimals: int = 2, suffix: str = "") -> str:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return f"N/A{suffix}"
+        sign = "+" if v > 0 else ""
+        return f"{sign}{v:.{decimals}f}{suffix}"
+
+    @staticmethod
+    def _human_side(value: Any) -> str:
+        side = str(value or "").strip().upper()
+        if side in {"BUY", "LONG"}:
+            return "LONG"
+        if side in {"SELL", "SHORT"}:
+            return "SHORT"
+        return side or "N/A"
+
+    @staticmethod
+    def _human_exit_reason(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        mapping = {
+            "take_profit": "Kar Al",
+            "stop_loss": "Zarar Durdur",
+            "trailing_stop": "İz Süren Stop",
+            "signal_exit": "Sinyal Çıkışı",
+            "time_exit": "Süre Bazlı Çıkış",
+            "manual": "Manuel",
+            "shutdown": "Sistem Kapanışı",
+            "emergency": "Acil Durum",
+        }
+        return mapping.get(raw, (raw.replace("_", " ").title() if raw else "N/A"))
+
+    @staticmethod
+    def _human_strategy_name(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return "Bilinmiyor"
+
+        key = raw.lower()
+        mapping = {
+            "adaptive_ob": "Adaptive Oversold Bounce",
+            "oversold_bounce": "Oversold Bounce",
+            "adaptive_str": "Adaptive Short The Rip",
+            "short_the_rip": "Short The Rip",
+            "mean_reversion": "VWAP Mean Reversion",
+            "vst_fullbot_canary": "VST Fullbot Canary",
+            "base": "Base Strategy",
+            "default": "Default Strategy",
+            "unknown": "Bilinmiyor",
+        }
+        if key in mapping:
+            return mapping[key]
+
+        normalized = raw.replace("-", " ").replace("_", " ").strip()
+        return normalized.title() if normalized else raw
+
+    def _telegram_level_allows(self, min_level: str) -> bool:
+        rank = {"critical": 0, "normal": 1, "verbose": 2}
+        current = rank.get(self.telegram_notify_level, 1)
+        required = rank.get(self._normalize_telegram_notify_level(min_level), 1)
+        return current >= required
+
+    def _send_telegram_text(self, text: str) -> None:
+        if not self.telegram:
+            return
+        try:
+            self.telegram.send(text)
+        except Exception as exc:
+            logger.warning("Telegram trade notification send failed: %s", exc)
+
+    async def _on_trade_opened(self, payload: Dict[str, Any]) -> None:
+        if not self.telegram_trade_notifications_enabled:
+            return
+        if not self._telegram_level_allows("normal"):
+            return
+        if not isinstance(payload, dict):
+            return
+
+        symbol = html.escape(str(payload.get("symbol") or "N/A"))
+        side = html.escape(self._human_side(payload.get("side")))
+        strategy = html.escape(
+            self._human_strategy_name(payload.get("strategy_name") or payload.get("strategy"))
+        )
+        entry_price = self._fmt_num(payload.get("entry_price"), 4)
+        size = self._fmt_num(payload.get("position_size"), 6)
+        stop_loss = self._fmt_num(payload.get("stop_loss"), 4)
+        take_profit = self._fmt_num(payload.get("take_profit"), 4)
+        risk_usd = self._fmt_num(payload.get("risk_usd"), 2)
+        notional = self._fmt_num(payload.get("entry_notional_usd"), 2)
+        ts = html.escape(str(payload.get("timestamp") or payload.get("entry_time") or "N/A"))
+
+        msg = (
+            "🟢 <b>Bearish Alpha | Pozisyon Açıldı</b>\n"
+            f"<code>{symbol}</code> | <b>{side}</b>\n"
+            "────────────────────────\n"
+            f"Strateji: <b>{strategy}</b>\n"
+            f"Giriş: <b>{entry_price}</b>\n"
+            f"Miktar: <code>{size}</code>\n"
+            f"Notional: ${notional}\n"
+            f"Risk: ${risk_usd}\n"
+            f"SL / TP: {stop_loss} / {take_profit}\n"
+            f"Zaman (UTC): <code>{ts}</code>"
+        )
+
+        if self._telegram_level_allows("verbose"):
+            order_id = html.escape(str(payload.get("entry_order_id") or "N/A"))
+            slippage_bps = self._fmt_num(payload.get("entry_slippage_bps"), 2)
+            msg += (
+                "\n\n<b>Detay</b>"
+                f"\nOrder ID: <code>{order_id}</code>"
+                f"\nSlippage: {slippage_bps} bps"
+            )
+
+        self._send_telegram_text(msg)
+
+    async def _on_trade_closed(self, payload: Dict[str, Any]) -> None:
+        if not self.telegram_trade_notifications_enabled:
+            return
+        if not self._telegram_level_allows("normal"):
+            return
+        if not isinstance(payload, dict):
+            return
+
+        pnl_usd_raw = payload.get("pnl_usd")
+        try:
+            pnl_usd = float(pnl_usd_raw)
+        except (TypeError, ValueError):
+            pnl_usd = 0.0
+        pnl_emoji = "🟢" if pnl_usd > 0 else "🔴" if pnl_usd < 0 else "⚪"
+
+        symbol = html.escape(str(payload.get("symbol") or "N/A"))
+        side = html.escape(self._human_side(payload.get("side")))
+        strategy = html.escape(
+            self._human_strategy_name(payload.get("strategy_name") or payload.get("strategy"))
+        )
+        reason = html.escape(self._human_exit_reason(payload.get("exit_reason")))
+        exit_price = self._fmt_num(payload.get("exit_price"), 4)
+        pnl_usd_text = self._fmt_signed_num(payload.get("pnl_usd"), 2)
+        pnl_pct_text = self._fmt_signed_num(payload.get("pnl_pct"), 2, "%")
+        duration_min = self._fmt_num(payload.get("duration_min"), 1)
+        ts = html.escape(str(payload.get("timestamp") or payload.get("exit_time") or "N/A"))
+
+        msg = (
+            f"{pnl_emoji} <b>Bearish Alpha | Pozisyon Kapandı</b>\n"
+            f"<code>{symbol}</code> | <b>{side}</b>\n"
+            "────────────────────────\n"
+            f"Strateji: <b>{strategy}</b>\n"
+            f"Çıkış: <b>{exit_price}</b>\n"
+            f"PnL: <b>${pnl_usd_text}</b> ({pnl_pct_text})\n"
+            f"Neden: {reason}\n"
+            f"Süre: {duration_min} dk\n"
+            f"Zaman (UTC): <code>{ts}</code>"
+        )
+
+        if self._telegram_level_allows("verbose"):
+            rr = self._fmt_num(payload.get("rr_achieved"), 2)
+            mfe = self._fmt_num(payload.get("mfe_pct"), 2)
+            mae = self._fmt_num(payload.get("mae_pct"), 2)
+            exit_order_id = html.escape(str(payload.get("exit_order_id") or "N/A"))
+            trade_id = html.escape(str(payload.get("trade_id") or "N/A"))
+            msg += (
+                "\n\n<b>Detay</b>"
+                f"\nTrade ID: <code>{trade_id}</code>"
+                f"\nExit Order: <code>{exit_order_id}</code>"
+                f"\nRR: {rr}"
+                f"\nMFE / MAE: {mfe}% / {mae}%"
+            )
+
+        self._send_telegram_text(msg)
 
     def _normalize_risk_params(self):
         """
@@ -2136,7 +2336,18 @@ class LiveTradingLauncher:
             if not core_result.get('success'):
                 logger.error(f"❌ Core systems initialization failed: {core_result.get('reason')}")
                 return False
-    
+
+            if hasattr(self.coordinator, "set_trade_event_notifiers"):
+                self.coordinator.set_trade_event_notifiers(
+                    on_open=self._on_trade_opened,
+                    on_closed=self._on_trade_closed,
+                )
+                logger.info(
+                    "✓ Trade lifecycle Telegram hooks registered (enabled=%s, level=%s)",
+                    self.telegram_trade_notifications_enabled,
+                    self.telegram_notify_level,
+                )
+
             logger.info("✅ Core production systems initialized")
             logger.info(f"  Components: {', '.join(core_result.get('components', []))}")
             return True

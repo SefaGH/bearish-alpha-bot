@@ -8,7 +8,7 @@ import asyncio
 import inspect
 import json
 import math
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Callable
 from datetime import datetime, timezone
 import time
 import os
@@ -173,6 +173,8 @@ class ProductionCoordinator:
         self._watchdog_task: Optional[asyncio.Task] = None
         self._rl_telemetry_task: Optional[asyncio.Task] = None
         self._recheck_wakeup_event: Optional[asyncio.Event] = asyncio.Event()
+        self._trade_opened_notifier: Optional[Callable[[Dict[str, Any]], Any]] = None
+        self._trade_closed_notifier: Optional[Callable[[Dict[str, Any]], Any]] = None
         
         # --- DEĞİŞİKLİK 2: Kendi config'ini yüklemek yerine dışarıdan gelen config'i kullan ---
         # Eğer dışarıdan bir config gelmezse, eski davranışa geri dön (güvenlik için)
@@ -1540,6 +1542,55 @@ class ProductionCoordinator:
                 event.set()
             except Exception:
                 pass
+
+    def set_trade_event_notifiers(
+        self,
+        *,
+        on_open: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        on_closed: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> None:
+        """Register external callbacks for TRADE_OPENED / TRADE_CLOSED lifecycle events."""
+        self._trade_opened_notifier = on_open
+        self._trade_closed_notifier = on_closed
+
+    async def _safe_call_trade_notifier(
+        self,
+        notifier: Optional[Callable[[Dict[str, Any]], Any]],
+        payload: Dict[str, Any],
+        *,
+        label: str,
+    ) -> None:
+        if not callable(notifier):
+            return
+        try:
+            result = notifier(payload)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            logger.warning("[%s] notifier failed: %s", label, exc)
+
+    async def _handle_trade_opened_event(self, payload: Dict[str, Any]) -> None:
+        await self._safe_call_trade_notifier(
+            self._trade_opened_notifier,
+            payload,
+            label="TRADE_OPENED",
+        )
+
+    async def _handle_trade_closed_event(self, payload: Dict[str, Any]) -> None:
+        try:
+            handler = getattr(self.strategy_coordinator, "handle_trade_closed", None)
+            if callable(handler):
+                result = handler(payload)
+                if inspect.isawaitable(result):
+                    await result
+        except Exception as exc:
+            logger.warning("[TRADE_CLOSED] strategy handler failed: %s", exc)
+
+        await self._safe_call_trade_notifier(
+            self._trade_closed_notifier,
+            payload,
+            label="TRADE_CLOSED",
+        )
 
     async def _sleep_with_recheck_wakeup(self, sleep_time: float) -> None:
         if sleep_time <= 0:
@@ -3057,12 +3108,14 @@ class ProductionCoordinator:
                     lambda: self.trading_engine.trigger_coordinator_drain(timeout=0.0)
                 )
 
-            if (
-                hasattr(self.position_manager, "set_trade_closed_notifier")
-                and hasattr(self.strategy_coordinator, "handle_trade_closed")
-            ):
+            if hasattr(self.position_manager, "set_trade_opened_notifier"):
+                self.position_manager.set_trade_opened_notifier(
+                    lambda payload: self._handle_trade_opened_event(payload)
+                )
+
+            if hasattr(self.position_manager, "set_trade_closed_notifier"):
                 self.position_manager.set_trade_closed_notifier(
-                    lambda payload: self.strategy_coordinator.handle_trade_closed(payload)
+                    lambda payload: self._handle_trade_closed_event(payload)
                 )
             
             # === STEP 13: SET ACTIVE SYMBOLS ===

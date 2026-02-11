@@ -417,6 +417,8 @@ class AdvancedPositionManager:
 
         # Dispatch notifier wiring (StrategyCoordinator -> LiveTradingEngine bridge wake-up)
         self._dispatch_notifier: Optional[Callable[[], Awaitable[Any]]] = None
+        # Trade-opened notifier wiring (PositionManager -> external telemetry/notifiers)
+        self._trade_opened_notifier: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None
         # Trade-closed notifier wiring (PositionManager -> StrategyCoordinator telemetry/state)
         self._trade_closed_notifier: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]] = None
          
@@ -1145,6 +1147,13 @@ class AdvancedPositionManager:
         """Register async callback invoked when a TRADE_CLOSED payload is emitted."""
         self._trade_closed_notifier = notifier
 
+    def set_trade_opened_notifier(
+        self,
+        notifier: Optional[Callable[[Dict[str, Any]], Awaitable[Any]]],
+    ) -> None:
+        """Register async callback invoked when a TRADE_OPENED payload is emitted."""
+        self._trade_opened_notifier = notifier
+
     def _schedule_dispatch_nudge(self) -> None:
         if not self._dispatch_notifier:
             return
@@ -1178,6 +1187,25 @@ class AdvancedPositionManager:
             result = self._trade_closed_notifier(payload)
         except Exception as exc:
             logger.debug("Trade-closed notifier callable failed: %s", exc)
+            return
+
+        if asyncio.iscoroutine(result):
+            loop.create_task(result)
+
+    def _schedule_trade_opened_nudge(self, payload: Dict[str, Any]) -> None:
+        if not self._trade_opened_notifier:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("Trade-opened notifier skipped; no running loop detected")
+            return
+
+        try:
+            result = self._trade_opened_notifier(payload)
+        except Exception as exc:
+            logger.debug("Trade-opened notifier callable failed: %s", exc)
             return
 
         if asyncio.iscoroutine(result):
@@ -2371,6 +2399,33 @@ class AdvancedPositionManager:
                     exc,
                     exc_info=True,
                 )
+
+            open_payload = {
+                'event': 'TRADE_OPENED',
+                'timestamp': opened_at_iso or self._isoformat_z(datetime.now(timezone.utc)),
+                'run_id': run_id,
+                'trade_id': position.get('trade_id'),
+                'position_id': position_id,
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'side': str(side).upper(),
+                'strategy': strategy_name,
+                'strategy_name': strategy_name,
+                'entry_price': round(float(entry_price or 0.0), 4),
+                'entry_time': opened_at_iso,
+                'entry_order_id': execution_result.get('order_id'),
+                'position_size': amount,
+                'risk_usd': round(float(risk_usd or 0.0), 4),
+                'entry_notional_usd': round(float(position.get('position_notional', 0.0) or 0.0), 4),
+                'stop_loss': round(float(stop_loss or 0.0), 4),
+                'take_profit': round(float(take_profit or 0.0), 4),
+                'entry_slippage_bps': round(entry_slippage_bps, 4) if entry_slippage_bps is not None else None,
+                'leverage': leverage,
+                'volume_bucket_at_entry': position.get('volume_bucket_at_entry'),
+                'volume_strength_at_entry': position.get('volume_strength_at_entry'),
+            }
+            logger.info("TRADE_OPENED %s", json.dumps(open_payload))
+            self._schedule_trade_opened_nudge(open_payload)
              
             return {
                 'success': True,
