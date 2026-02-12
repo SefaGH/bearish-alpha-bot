@@ -825,6 +825,33 @@ class LiveTradingEngine:
                 parsed = _safe_bool(cfg_om.get(key))
                 if parsed is not None:
                     execution_params[key] = parsed
+
+            def _safe_float_local(value: Any, default: float) -> float:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return float(default)
+
+            strategy_name_norm = str(signal.get("strategy_name") or signal.get("strategy") or "").strip().lower()
+            apply_list_raw = cfg_om.get("fallback_soft_gate_apply_to_strategies") if isinstance(cfg_om, dict) else None
+            if isinstance(apply_list_raw, (list, tuple)):
+                apply_to = {str(x).strip().lower() for x in apply_list_raw if str(x).strip()}
+            else:
+                apply_to = {"adaptive_str"}
+
+            enabled_cfg = _safe_bool(cfg_om.get("fallback_soft_gate_enabled")) if isinstance(cfg_om, dict) else None
+            soft_gate_enabled = bool(enabled_cfg) if enabled_cfg is not None else bool(strategy_name_norm in apply_to)
+
+            soft_gate_cfg = {
+                "enabled": soft_gate_enabled,
+                "min_passes": int(_safe_float_local(cfg_om.get("fallback_soft_gate_min_passes"), 2.0)),
+                "rr_min": _safe_float_local(cfg_om.get("fallback_soft_gate_rr_min"), 1.2),
+                "max_adverse_bps": _safe_float_local(cfg_om.get("fallback_soft_gate_max_adverse_bps"), 15.0),
+                "max_spread_bps": _safe_float_local(cfg_om.get("fallback_soft_gate_max_spread_bps"), 8.0),
+                "fail_closed_on_insufficient_context": bool(
+                    _safe_bool(cfg_om.get("fallback_soft_gate_fail_closed_on_insufficient_context")) or False
+                ),
+            }
             side_norm = str(signal.get('side', '') or '').lower()
             order_type_hint = (
                 execution_params.get('type')
@@ -1136,6 +1163,34 @@ class LiveTradingEngine:
                 'exchange': exchange,
                 'signal': signal,
                 'execution_params': execution_params,
+            }
+
+            signal_ts_ms = None
+            try:
+                raw_ts = signal.get("timestamp")
+                if raw_ts is not None:
+                    signal_ts_ms = int(float(raw_ts))
+            except (TypeError, ValueError):
+                signal_ts_ms = None
+
+            latest_strategy_state = None
+            try:
+                getter = getattr(self.strategy_coordinator, "get_latest_strategy_state", None)
+                if callable(getter):
+                    latest_strategy_state = getter(
+                        signal.get("strategy_name") or signal.get("strategy"),
+                        symbol,
+                    )
+            except Exception:
+                latest_strategy_state = None
+
+            order_request["_internal"] = {
+                "signal_id": signal_id,
+                "strategy_name": signal.get("strategy_name") or signal.get("strategy"),
+                "signal_created_ts_ms": signal_ts_ms,
+                "signal_entry_ref": signal.get("entry_raw") or signal.get("entry"),
+                "fallback_soft_gate": soft_gate_cfg,
+                "latest_strategy_state": latest_strategy_state if isinstance(latest_strategy_state, dict) else None,
             }
 
             # SSOT limit price (pre-risk, pre-validation) – OrderManager must not re-fetch ticker to price limits.

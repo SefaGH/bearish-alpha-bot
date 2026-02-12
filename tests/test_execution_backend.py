@@ -84,6 +84,18 @@ class FakeLimitTimeoutNoVerificationCcxtClient(FakeLimitTimeoutCcxtClient):
         raise Exception("positions unavailable")
 
 
+class FakeLimitTimeoutSoftGateBlockCcxtClient(FakeLimitTimeoutCcxtClient):
+    def ticker(self, symbol: str):
+        # Wide spread + adverse move to force soft-gate block.
+        return {"last": 99.0, "bid": 98.5, "ask": 100.5}
+
+
+class FakeLimitTimeoutSoftGateAllowCcxtClient(FakeLimitTimeoutCcxtClient):
+    def ticker(self, symbol: str):
+        # Tight spread + no adverse drift => soft-gate allows fallback.
+        return {"last": 100.0, "bid": 99.99, "ask": 100.01}
+
+
 def test_market_order_simulated_by_default(clean_env):
     from src.core.order_manager import SmartOrderManager
 
@@ -419,6 +431,97 @@ def test_limit_timeout_market_fallback_aborts_when_position_delta_unverified(cle
     assert result.get("requested_order_type") == "limit"
     assert result.get("effective_order_type") == "limit"
     assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_market_fallback_soft_gate_blocks_when_score_below_threshold(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutSoftGateBlockCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0, "target": 100.5},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": True,
+                },
+                "_internal": {
+                    "fallback_soft_gate": {
+                        "enabled": True,
+                        "min_passes": 2,
+                        "rr_min": 1.2,
+                        "max_adverse_bps": 50.0,
+                        "max_spread_bps": 8.0,
+                        "fail_closed_on_insufficient_context": False,
+                    }
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is False
+    assert str(result.get("reason") or "").startswith("ABORT:FALLBACK_SOFT_GATE:")
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback_soft_gate_blocked"
+    assert result.get("effective_order_type") == "limit"
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_market_fallback_soft_gate_allows_when_min_passes_met(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutSoftGateAllowCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},  # edge_preserved intentionally NA (no target)
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": True,
+                },
+                "_internal": {
+                    "fallback_soft_gate": {
+                        "enabled": True,
+                        "min_passes": 2,
+                        "rr_min": 1.2,
+                        "max_adverse_bps": 50.0,
+                        "max_spread_bps": 8.0,
+                        "fail_closed_on_insufficient_context": False,
+                    }
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is True
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback"
+    assert result.get("effective_order_type") == "market"
+    assert isinstance(result.get("fallback_soft_gate"), dict)
+    assert result["fallback_soft_gate"].get("reason") == "fallback_soft_gate_pass"
+    assert [c["type"] for c in client.create_order_calls] == ["limit", "market"]
 
 
 def test_real_cancel_is_idempotent(clean_env):

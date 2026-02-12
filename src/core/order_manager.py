@@ -491,6 +491,217 @@ class SmartOrderManager:
         text = str(status or "").strip().lower()
         return text in {"closed", "filled", "canceled", "cancelled", "rejected", "expired"}
 
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            if value is None:
+                return None
+            out = float(value)
+            if out != out:  # NaN
+                return None
+            return out
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    def _collect_fallback_soft_gate_cfg(self, *, order_request: Dict[str, Any], execution_params: Dict[str, Any]) -> Dict[str, Any]:
+        cfg: Dict[str, Any] = {}
+
+        exec_block = execution_params.get("fallback_soft_gate") if isinstance(execution_params, dict) else None
+        if isinstance(exec_block, dict):
+            cfg.update(exec_block)
+
+        if isinstance(execution_params, dict):
+            for k in (
+                "fallback_soft_gate_enabled",
+                "fallback_soft_gate_min_passes",
+                "fallback_soft_gate_rr_min",
+                "fallback_soft_gate_max_adverse_bps",
+                "fallback_soft_gate_max_spread_bps",
+                "fallback_soft_gate_fail_closed_on_insufficient_context",
+            ):
+                if execution_params.get(k) is not None:
+                    cfg[k] = execution_params.get(k)
+
+        internal = order_request.get("_internal") if isinstance(order_request.get("_internal"), dict) else {}
+        internal_soft = internal.get("fallback_soft_gate") if isinstance(internal.get("fallback_soft_gate"), dict) else None
+        if isinstance(internal_soft, dict):
+            cfg.update(internal_soft)
+
+        enabled = _coerce_bool(cfg.get("enabled"))
+        if enabled is None:
+            enabled = _coerce_bool(cfg.get("fallback_soft_gate_enabled"))
+        if enabled is None:
+            enabled = False
+
+        min_passes = self._safe_int(cfg.get("min_passes", cfg.get("fallback_soft_gate_min_passes", 2)), 2)
+        min_passes = max(1, min(min_passes, 3))
+
+        rr_min = self._safe_float(cfg.get("rr_min", cfg.get("fallback_soft_gate_rr_min")))
+        if rr_min is None:
+            rr_min = 1.2
+
+        max_adverse_bps = self._safe_float(
+            cfg.get("max_adverse_bps", cfg.get("fallback_soft_gate_max_adverse_bps"))
+        )
+        if max_adverse_bps is None:
+            max_adverse_bps = 15.0
+
+        max_spread_bps = self._safe_float(cfg.get("max_spread_bps", cfg.get("fallback_soft_gate_max_spread_bps")))
+        if max_spread_bps is None:
+            max_spread_bps = 8.0
+
+        fail_closed = _coerce_bool(
+            cfg.get(
+                "fail_closed_on_insufficient_context",
+                cfg.get("fallback_soft_gate_fail_closed_on_insufficient_context"),
+            )
+        )
+        if fail_closed is None:
+            fail_closed = False
+
+        return {
+            "enabled": bool(enabled),
+            "min_passes": int(min_passes),
+            "rr_min": float(rr_min),
+            "max_adverse_bps": float(max_adverse_bps),
+            "max_spread_bps": float(max_spread_bps),
+            "fail_closed_on_insufficient_context": bool(fail_closed),
+        }
+
+    def _evaluate_fallback_soft_gate(
+        self,
+        *,
+        normalized_side: str,
+        signal: Dict[str, Any],
+        current_px: float,
+        ref_px: Optional[float],
+        tick: Dict[str, Any],
+        cfg: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        enabled = bool(cfg.get("enabled", False))
+        if not enabled:
+            return {"enabled": False, "allow": True, "reason": "disabled"}
+
+        min_passes = int(cfg.get("min_passes", 2) or 2)
+        rr_min = float(cfg.get("rr_min", 1.2) or 1.2)
+        max_adverse_bps = float(cfg.get("max_adverse_bps", 15.0) or 15.0)
+        max_spread_bps = float(cfg.get("max_spread_bps", 8.0) or 8.0)
+        fail_closed = bool(cfg.get("fail_closed_on_insufficient_context", False))
+
+        passes: List[str] = []
+        fails: List[str] = []
+        na: List[str] = []
+        gates: Dict[str, Dict[str, Any]] = {}
+
+        # Gate 1: edge_preserved (fallback fill still keeps acceptable RR)
+        stop_px = self._safe_float(signal.get("stop") or signal.get("stop_loss"))
+        target_px = self._safe_float(signal.get("target") or signal.get("take_profit"))
+        if current_px > 0 and stop_px is not None and target_px is not None:
+            risk = None
+            reward = None
+            if normalized_side == "buy":
+                risk = current_px - stop_px
+                reward = target_px - current_px
+            elif normalized_side == "sell":
+                risk = stop_px - current_px
+                reward = current_px - target_px
+
+            rr_now = None
+            if risk is not None and reward is not None and risk > 0 and reward > 0:
+                rr_now = float(reward / risk)
+                ok = bool(rr_now >= rr_min)
+                gates["edge_preserved"] = {"pass": ok, "na": False, "rr_now": rr_now, "rr_min": rr_min}
+                (passes if ok else fails).append("edge_preserved")
+            else:
+                gates["edge_preserved"] = {"pass": False, "na": False, "rr_now": rr_now, "rr_min": rr_min}
+                fails.append("edge_preserved")
+        else:
+            gates["edge_preserved"] = {"pass": False, "na": True}
+            na.append("edge_preserved")
+
+        # Gate 2: direction_continuity (avoid forcing market into strong adverse move)
+        if current_px > 0 and ref_px is not None and ref_px > 0:
+            adverse_bps = None
+            if normalized_side == "buy":
+                adverse_bps = max((float(ref_px) - float(current_px)) / float(ref_px) * 10000.0, 0.0)
+            elif normalized_side == "sell":
+                adverse_bps = max((float(current_px) - float(ref_px)) / float(ref_px) * 10000.0, 0.0)
+            if adverse_bps is None:
+                gates["direction_continuity"] = {"pass": False, "na": True}
+                na.append("direction_continuity")
+            else:
+                ok = bool(float(adverse_bps) <= float(max_adverse_bps))
+                gates["direction_continuity"] = {
+                    "pass": ok,
+                    "na": False,
+                    "adverse_bps": float(adverse_bps),
+                    "max_adverse_bps": float(max_adverse_bps),
+                }
+                (passes if ok else fails).append("direction_continuity")
+        else:
+            gates["direction_continuity"] = {"pass": False, "na": True}
+            na.append("direction_continuity")
+
+        # Gate 3: execution_quality (spread guard for market fallback)
+        bid = self._safe_float((tick or {}).get("bid"))
+        ask = self._safe_float((tick or {}).get("ask"))
+        if bid is not None and ask is not None and bid > 0 and ask >= bid:
+            mid = (bid + ask) / 2.0
+            spread_bps = ((ask - bid) / mid) * 10000.0 if mid > 0 else None
+            if spread_bps is None:
+                gates["execution_quality"] = {"pass": False, "na": True}
+                na.append("execution_quality")
+            else:
+                ok = bool(float(spread_bps) <= float(max_spread_bps))
+                gates["execution_quality"] = {
+                    "pass": ok,
+                    "na": False,
+                    "spread_bps": float(spread_bps),
+                    "max_spread_bps": float(max_spread_bps),
+                }
+                (passes if ok else fails).append("execution_quality")
+        else:
+            gates["execution_quality"] = {"pass": False, "na": True}
+            na.append("execution_quality")
+
+        applicable = 3 - len(na)
+        if applicable < min_passes:
+            allow = not fail_closed
+            reason = (
+                "fallback_soft_gate_insufficient_context_allow"
+                if allow
+                else "fallback_soft_gate_insufficient_context_block"
+            )
+        else:
+            allow = len(passes) >= min_passes
+            reason = "fallback_soft_gate_pass" if allow else "fallback_soft_gate_block"
+
+        return {
+            "enabled": True,
+            "allow": bool(allow),
+            "reason": reason,
+            "score": f"{len(passes)}/{applicable}",
+            "required": int(min_passes),
+            "passes": passes,
+            "fails": fails,
+            "na": na,
+            "gates": gates,
+            "config": {
+                "min_passes": int(min_passes),
+                "rr_min": float(rr_min),
+                "max_adverse_bps": float(max_adverse_bps),
+                "max_spread_bps": float(max_spread_bps),
+                "fail_closed_on_insufficient_context": bool(fail_closed),
+            },
+        }
+
     def _extract_position_qty_for_side(self, *, position: Dict[str, Any], symbol: str, normalized_side: str, pos_side_hint: str) -> Optional[float]:
         if not isinstance(position, dict):
             return None
@@ -1163,6 +1374,7 @@ class SmartOrderManager:
                     await asyncio.sleep(poll_s)
 
                 # Timeout reached: apply chase gate (directional bps) and optionally market-fallback.
+                tick = {}
                 try:
                     tick = client.ticker(symbol)
                     current_px = float((tick or {}).get("last") or 0.0)
@@ -1469,6 +1681,40 @@ class SmartOrderManager:
                         'verification_sources': verification_sources,
                     }
 
+                soft_gate_cfg = self._collect_fallback_soft_gate_cfg(
+                    order_request=order_request,
+                    execution_params=(execution_params if isinstance(execution_params, dict) else {}),
+                )
+                soft_gate_eval = self._evaluate_fallback_soft_gate(
+                    normalized_side=normalized_side,
+                    signal=(signal if isinstance(signal, dict) else {}),
+                    current_px=float(current_px or 0.0),
+                    ref_px=ref_px,
+                    tick=(tick if isinstance(tick, dict) else {}),
+                    cfg=soft_gate_cfg,
+                )
+                if bool(soft_gate_eval.get("enabled")) and not bool(soft_gate_eval.get("allow", True)):
+                    logger.info(
+                        "[ORDER-FALLBACK] soft-gate blocked symbol=%s side=%s score=%s reason=%s passes=%s fails=%s na=%s",
+                        symbol,
+                        side,
+                        soft_gate_eval.get("score"),
+                        soft_gate_eval.get("reason"),
+                        soft_gate_eval.get("passes"),
+                        soft_gate_eval.get("fails"),
+                        soft_gate_eval.get("na"),
+                    )
+                    return {
+                        'success': False,
+                        'reason': f"ABORT:FALLBACK_SOFT_GATE:{soft_gate_eval.get('reason', 'blocked')}",
+                        'order_id': exchange_order_id,
+                        'fallback_reason': 'limit_timeout_market_fallback_soft_gate_blocked',
+                        'requested_order_type': 'limit',
+                        'effective_order_type': 'limit',
+                        'verification_sources': verification_sources,
+                        'fallback_soft_gate': soft_gate_eval,
+                    }
+
                 # Place market order as fallback only for residual amount.
                 logger.info(
                     "[ORDER-FALLBACK] limit_timeout_market_fallback symbol=%s side=%s deviation_bps=%s max_chase_bps=%s residual_qty=%.8f observed_filled=%.8f",
@@ -1495,6 +1741,8 @@ class SmartOrderManager:
                         fallback_result.setdefault("deviation_bps", float(deviation_bps))
                     if max_chase_bps is not None:
                         fallback_result.setdefault("max_chase_bps", float(max_chase_bps))
+                    if bool(soft_gate_eval.get("enabled")):
+                        fallback_result.setdefault("fallback_soft_gate", soft_gate_eval)
                 return fallback_result
             
         except Exception as e:

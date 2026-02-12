@@ -88,6 +88,15 @@ order_manager:
   disable_market_fallback_on_extreme_bucket: true
   disable_market_fallback_on_fast_move: true
   fallback_require_position_delta_verification: true
+  # Soft gate-first rollout for timeout->market fallback (no hard veto in phase-1).
+  fallback_soft_gate_enabled: true
+  fallback_soft_gate_apply_to_strategies:
+    - "adaptive_str"
+  fallback_soft_gate_min_passes: 2
+  fallback_soft_gate_rr_min: 1.2
+  fallback_soft_gate_max_adverse_bps: 15.0
+  fallback_soft_gate_max_spread_bps: 8.0
+  fallback_soft_gate_fail_closed_on_insufficient_context: false
 
 # ==============================================================================
 # RISK MANAGEMENT - ENHANCED POSITION SIZING
