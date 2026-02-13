@@ -1,0 +1,80 @@
+{
+  "status": "GO",
+  "metrics": {
+    "total_traces": 10,
+    "total_outcomes": 10,
+    "smart_entry_applied_rate": 1.0,
+    "missing_atr_force_market_count": 0,
+    "missing_atr_force_market_rate": 0.0,
+    "env_forced_order_type_market_count": 0,
+    "market_rate_by_bucket": {
+      "EXTREME": 0.0,
+      "HIGH": 0.0,
+      "NORMAL": 0.0
+    },
+    "fallback_reason_counts": {
+      "limit_timeout_market_fallback": 3,
+      "limit_timeout_market_fallback_disabled:extreme_bucket": 4
+    },
+    "outcome_reason_counts": {
+      "ABORT:NO_FILL_TIMEOUT": 4,
+      "ABORT:STOP_HIT_BEFORE_ENTRY": 1,
+      "ABORT:CHASE_GATE:28.91>5.00": 1,
+      "ABORT:CHASE_GATE:22.51>5.00": 1
+    },
+    "abort_no_fill_timeout_count": 4,
+    "abort_no_fill_timeout_rate": 0.4,
+    "abort_stop_hit_cancel_unconfirmed_count": 0,
+    "abort_stop_hit_cancel_unconfirmed_rate": 0.0,
+    "filled_during_stop_abort_count": 0,
+    "filled_during_stop_abort_rate": 0.0,
+    "entry_slippage_trade_weighted_p90_bps": 1.7911550565661805,
+    "entry_slippage_trade_weighted_p95_bps": 2.0040247772044655,
+    "entry_slippage_notional_weighted_p90_bps": 2.2168944978427514,
+    "entry_slippage_notional_weighted_p95_bps": 2.2168944978427514,
+    "time_to_fill_ms_p50": 247830.5,
+    "time_to_fill_ms_p90": 304022.8,
+    "time_to_fill_ms_p95": 304156.9,
+    "stop_overshoot_p90_bps": 1.3765,
+    "stop_overshoot_p95_bps": 1.4678999999999998,
+    "planned_vs_realized_rr_drift_abs_p90": 1.988,
+    "planned_vs_realized_rr_drift_abs_p95": 1.9889999999999999,
+    "recon_watchdog_events_count": 754,
+    "recon_cycles_count": 376,
+    "recon_stale_removed_total": 0,
+    "recon_orphans_detected_total": 376,
+    "recon_orphans_adopted_total": 0,
+    "atr_stale_market_violations": 0,
+    "atr_age_threshold_ms": 5000,
+    "missed_fill_increase_pct_vs_baseline": null
+  },
+  "go_no_go": {
+    "env_forced_market_zero": true,
+    "smart_entry_applied_rate_ok": true,
+    "missing_atr_force_market_rate_ok": true,
+    "extreme_market_rate_ok": true,
+    "atr_freshness_violations_zero": true,
+    "missed_fill_increase_ok": "baseline_not_provided",
+    "stop_abort_cancel_unconfirmed_ok": "not_configured",
+    "recon_orphans_detected_ok": "not_configured",
+    "recon_stale_removed_ok": "not_configured",
+    "recon_orphans_adopted_ok": "not_configured",
+    "recon_events_present": "not_required"
+  },
+  "failed_gates": [],
+  "telemetry_gaps": [],
+  "scope": {
+    "files": [
+      "logs\\live_trading_20260212_110315_877710.log"
+    ],
+    "symbol": "BTC/USDT:USDT",
+    "strategy": null
+  },
+  "event_counts": {
+    "traces": 10,
+    "outcomes": 10,
+    "order_manager_decisions": 14,
+    "trade_closed": 4,
+    "reconciliation_watchdog": 754
+  }
+}

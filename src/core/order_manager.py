@@ -1081,6 +1081,37 @@ class SmartOrderManager:
                 return False
             return amount_f > 0 and filled_f >= max(amount_f * 0.999, amount_f - 1e-12)
 
+        def _extract_filled_qty(exchange_order: dict) -> float:
+            if not isinstance(exchange_order, dict):
+                return 0.0
+            candidates: List[Any] = [
+                exchange_order.get("filled"),
+                exchange_order.get("executedQty"),
+                exchange_order.get("executed_qty"),
+            ]
+            info = exchange_order.get("info")
+            if isinstance(info, dict):
+                candidates.extend(
+                    [
+                        info.get("executedQty"),
+                        info.get("executed_qty"),
+                        info.get("cumQty"),
+                        info.get("dealQty"),
+                    ]
+                )
+            for value in candidates:
+                try:
+                    qty = float(value or 0.0)
+                except Exception:
+                    continue
+                if qty > 0:
+                    return qty
+            return 0.0
+
+        def _is_cancelled_or_closed_status(exchange_order: dict) -> bool:
+            status = str((exchange_order or {}).get("status") or "").lower().strip()
+            return status in {"canceled", "cancelled", "closed", "expired", "rejected"}
+
         try:
             clients = clients_to_use if clients_to_use is not None else self.exchange_clients
             client = clients[exchange]
@@ -1295,6 +1326,120 @@ class SmartOrderManager:
 
                 start_ts = time.time()
                 last_seen_order = exchange_order
+
+                async def _cancel_with_stop_abort_verification() -> Dict[str, Any]:
+                    try:
+                        cancel_attempts = int(execution_params.get("stop_abort_cancel_attempts", 3))
+                    except Exception:
+                        cancel_attempts = 3
+                    cancel_attempts = max(1, min(cancel_attempts, 10))
+
+                    try:
+                        fetch_attempts = int(execution_params.get("stop_abort_fetch_attempts", 3))
+                    except Exception:
+                        fetch_attempts = 3
+                    fetch_attempts = max(1, min(fetch_attempts, 10))
+
+                    try:
+                        cancel_retry_delay_s = float(execution_params.get("stop_abort_cancel_retry_delay_s", 0.35))
+                    except Exception:
+                        cancel_retry_delay_s = 0.35
+                    if cancel_retry_delay_s < 0:
+                        cancel_retry_delay_s = 0.0
+
+                    try:
+                        fetch_retry_delay_s = float(execution_params.get("stop_abort_fetch_retry_delay_s", 0.20))
+                    except Exception:
+                        fetch_retry_delay_s = 0.20
+                    if fetch_retry_delay_s < 0:
+                        fetch_retry_delay_s = 0.0
+
+                    cancel_errors: List[str] = []
+                    last_snapshot: Optional[Dict[str, Any]] = None
+
+                    for cancel_attempt in range(1, cancel_attempts + 1):
+                        try:
+                            cancel_resp = client.cancel_order(exchange_order_id, symbol, params={})
+                            logger.warning(
+                                "[STOP-ABORT/%s/%s] cancel attempt %s/%s order_id=%s resp=%s",
+                                exchange,
+                                symbol,
+                                cancel_attempt,
+                                cancel_attempts,
+                                exchange_order_id,
+                                _sanitize_ccxt_order(cancel_resp) if isinstance(cancel_resp, dict) else str(cancel_resp),
+                            )
+                        except Exception as exc:
+                            cancel_errors.append(str(exc))
+                            _log_rest_debug("limit_stop_abort_cancel", exc)
+                            logger.warning(
+                                "[STOP-ABORT/%s/%s] cancel attempt %s/%s failed order_id=%s err=%s",
+                                exchange,
+                                symbol,
+                                cancel_attempt,
+                                cancel_attempts,
+                                exchange_order_id,
+                                exc,
+                            )
+
+                        if callable(getattr(client, "fetch_order", None)):
+                            for fetch_attempt in range(1, fetch_attempts + 1):
+                                snapshot = None
+                                try:
+                                    snapshot = client.fetch_order(exchange_order_id, symbol, params={})
+                                except Exception as exc:
+                                    _log_rest_debug("limit_stop_abort_fetch_order", exc)
+                                    logger.warning(
+                                        "[STOP-ABORT/%s/%s] fetch attempt %s/%s failed order_id=%s err=%s",
+                                        exchange,
+                                        symbol,
+                                        fetch_attempt,
+                                        fetch_attempts,
+                                        exchange_order_id,
+                                        exc,
+                                    )
+
+                                if isinstance(snapshot, dict):
+                                    last_snapshot = snapshot
+                                    filled_qty = _extract_filled_qty(snapshot)
+                                    if _is_filled(snapshot) or filled_qty > 0:
+                                        return {
+                                            "state": "filled",
+                                            "order": snapshot,
+                                            "filled_qty": filled_qty,
+                                            "cancel_errors": cancel_errors,
+                                        }
+                                    if _is_cancelled_or_closed_status(snapshot):
+                                        return {
+                                            "state": "canceled",
+                                            "order": snapshot,
+                                            "filled_qty": filled_qty,
+                                            "cancel_errors": cancel_errors,
+                                        }
+
+                                if fetch_attempt < fetch_attempts:
+                                    await asyncio.sleep(fetch_retry_delay_s)
+
+                        if cancel_attempt < cancel_attempts:
+                            await asyncio.sleep(cancel_retry_delay_s)
+
+                    final_filled_qty = _extract_filled_qty(last_snapshot or {})
+                    if last_snapshot and (_is_filled(last_snapshot) or final_filled_qty > 0):
+                        state = "filled"
+                    elif last_snapshot and _is_cancelled_or_closed_status(last_snapshot):
+                        state = "canceled"
+                    elif last_snapshot:
+                        state = "open"
+                    else:
+                        state = "unknown"
+
+                    return {
+                        "state": state,
+                        "order": last_snapshot,
+                        "filled_qty": final_filled_qty,
+                        "cancel_errors": cancel_errors,
+                    }
+
                 while timeout_s > 0 and (time.time() - start_ts) < timeout_s:
                     # 1) stop-hit-before-entry check
                     if stop_price and stop_price > 0:
@@ -1305,18 +1450,76 @@ class SmartOrderManager:
                             last_px = 0.0
 
                         if last_px > 0:
-                            if normalized_side == "buy" and last_px <= stop_price:
-                                try:
-                                    client.cancel_order(exchange_order_id, symbol, params={})
-                                except Exception:
-                                    pass
-                                return {'success': False, 'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY', 'order_id': exchange_order_id}
-                            if normalized_side == "sell" and last_px >= stop_price:
-                                try:
-                                    client.cancel_order(exchange_order_id, symbol, params={})
-                                except Exception:
-                                    pass
-                                return {'success': False, 'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY', 'order_id': exchange_order_id}
+                            stop_hit_before_entry = (
+                                (normalized_side == "buy" and last_px <= stop_price)
+                                or (normalized_side == "sell" and last_px >= stop_price)
+                            )
+                            if stop_hit_before_entry:
+                                stop_abort_diag = await _cancel_with_stop_abort_verification()
+                                stop_abort_state = str(stop_abort_diag.get("state") or "unknown")
+                                stop_abort_order = stop_abort_diag.get("order") or {}
+                                stop_abort_filled_qty = float(stop_abort_diag.get("filled_qty") or 0.0)
+
+                                if stop_abort_state == "filled":
+                                    avg_fill_price = stop_abort_order.get("average") or stop_abort_order.get("price") or limit_price
+                                    filled_amount = stop_abort_order.get("filled") or stop_abort_filled_qty or stop_abort_order.get("amount") or amount
+                                    try:
+                                        avg_fill_price = float(avg_fill_price or 0)
+                                    except Exception:
+                                        avg_fill_price = float(limit_price)
+                                    try:
+                                        filled_amount = float(filled_amount or 0)
+                                    except Exception:
+                                        filled_amount = float(amount or 0)
+
+                                    slippage = 0.0
+                                    if reference_price > 0 and avg_fill_price > 0:
+                                        slippage = abs(avg_fill_price - reference_price) / reference_price
+                                    self.execution_stats['total_slippage'] += slippage
+
+                                    order = {
+                                        'order_id': exchange_order_id,
+                                        'symbol': symbol,
+                                        'side': normalized_side,
+                                        'amount': amount,
+                                        'type': 'limit',
+                                        'limit_price': limit_price,
+                                        'exchange': exchange,
+                                        'expected_price': reference_price if reference_price > 0 else limit_price,
+                                        'status': (stop_abort_order.get("status") or OrderStatus.FILLED.value),
+                                        'created_at': datetime.now(timezone.utc),
+                                        'filled_amount': filled_amount,
+                                        'avg_fill_price': avg_fill_price,
+                                        'filled_at': datetime.now(timezone.utc),
+                                        'slippage': slippage,
+                                        'ccxt_params': ccxt_params,
+                                        'exchange_order': stop_abort_order if isinstance(stop_abort_order, dict) else {},
+                                    }
+                                    self.active_orders[exchange_order_id] = order
+                                    return {
+                                        'success': True,
+                                        'reason': 'FILLED_DURING_STOP_ABORT',
+                                        'order_id': exchange_order_id,
+                                        'filled_amount': filled_amount,
+                                        'avg_price': avg_fill_price,
+                                        'slippage': slippage,
+                                        'order': order,
+                                    }
+
+                                if stop_abort_state == "canceled":
+                                    return {
+                                        'success': False,
+                                        'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY',
+                                        'order_id': exchange_order_id,
+                                        'stop_abort_cancel_state': stop_abort_state,
+                                    }
+
+                                return {
+                                    'success': False,
+                                    'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY_CANCEL_UNCONFIRMED',
+                                    'order_id': exchange_order_id,
+                                    'stop_abort_cancel_state': stop_abort_state,
+                                }
 
                     # 2) order fill check
                     fetched = None

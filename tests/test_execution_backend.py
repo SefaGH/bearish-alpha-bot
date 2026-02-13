@@ -96,6 +96,35 @@ class FakeLimitTimeoutSoftGateAllowCcxtClient(FakeLimitTimeoutCcxtClient):
         return {"last": 100.0, "bid": 99.99, "ask": 100.01}
 
 
+class FakeStopHitCancelConfirmedCcxtClient(FakeLimitTimeoutCcxtClient):
+    def ticker(self, symbol: str):
+        # LONG stop should trigger immediately (last <= stop).
+        return {"last": 89.0}
+
+    def fetch_order(self, order_id: str, symbol: str = None, params=None):
+        return {"id": order_id, "status": "canceled", "filled": 0.0, "amount": 0.01, "price": 99.5}
+
+
+class FakeStopHitFilledRaceCcxtClient(FakeLimitTimeoutCcxtClient):
+    def ticker(self, symbol: str):
+        # LONG stop should trigger immediately (last <= stop).
+        return {"last": 89.0}
+
+    def cancel_order(self, order_id: str, symbol: str = None, params=None):
+        self.cancel_order_calls.append({"order_id": order_id, "symbol": symbol, "params": params or {}})
+        raise Exception("cancel race: already filled")
+
+    def fetch_order(self, order_id: str, symbol: str = None, params=None):
+        return {
+            "id": order_id,
+            "status": "closed",
+            "filled": 0.01,
+            "amount": 0.01,
+            "average": 99.4,
+            "price": 99.5,
+        }
+
+
 def test_market_order_simulated_by_default(clean_env):
     from src.core.order_manager import SmartOrderManager
 
@@ -522,6 +551,84 @@ def test_limit_timeout_market_fallback_soft_gate_allows_when_min_passes_met(clea
     assert isinstance(result.get("fallback_soft_gate"), dict)
     assert result["fallback_soft_gate"].get("reason") == "fallback_soft_gate_pass"
     assert [c["type"] for c in client.create_order_calls] == ["limit", "market"]
+
+
+def test_limit_stop_hit_abort_requires_cancel_confirmation(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeStopHitCancelConfirmedCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 1,
+                    "poll_interval_s": 0.01,
+                    "stop_abort_cancel_attempts": 1,
+                    "stop_abort_fetch_attempts": 1,
+                    "stop_abort_fetch_retry_delay_s": 0.0,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is False
+    assert result.get("reason") == "ABORT:STOP_HIT_BEFORE_ENTRY"
+    assert result.get("stop_abort_cancel_state") == "canceled"
+    assert client.cancel_order_calls
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_stop_hit_returns_success_when_order_fills_during_cancel_race(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeStopHitFilledRaceCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 1,
+                    "poll_interval_s": 0.01,
+                    "stop_abort_cancel_attempts": 1,
+                    "stop_abort_fetch_attempts": 1,
+                    "stop_abort_fetch_retry_delay_s": 0.0,
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is True
+    assert result.get("reason") == "FILLED_DURING_STOP_ABORT"
+    assert result.get("order_id") == "exch-limit-1"
+    assert abs(float(result.get("avg_price") or 0.0) - 99.4) < 1e-9
+    assert abs(float(result.get("filled_amount") or 0.0) - 0.01) < 1e-9
+    assert client.cancel_order_calls
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
 
 
 def test_real_cancel_is_idempotent(clean_env):

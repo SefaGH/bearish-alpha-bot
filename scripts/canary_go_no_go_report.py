@@ -10,6 +10,8 @@ It computes hard-gate metrics for canary rollout decisions:
 - missing_atr_force_market rate
 - market_rate_by_bucket (focus: EXTREME)
 - ABORT:NO_FILL_TIMEOUT rate
+- ABORT:STOP_HIT_BEFORE_ENTRY_CANCEL_UNCONFIRMED count/rate
+- FILLED_DURING_STOP_ABORT count/rate
 - ATR freshness violations (market while atr_age_ms > threshold)
 - time_to_fill_ms distribution (p50/p90/p95)
 - planned_vs_realized_rr_drift distribution from TRADE_CLOSED
@@ -46,6 +48,7 @@ class Thresholds:
     extreme_market_max_rate: float
     atr_age_threshold_ms: int
     missed_fill_increase_max_pct: float
+    max_stop_abort_cancel_unconfirmed: Optional[int]
     max_recon_orphans_detected: Optional[int]
     max_recon_stale_removed: Optional[int]
     max_recon_orphans_adopted: Optional[int]
@@ -334,15 +337,29 @@ def _compute_metrics(
 
     outcome_total = len(outcomes)
     fallback_reason_counts: Counter[str] = Counter()
+    outcome_reason_counts: Counter[str] = Counter()
     abort_no_fill_timeout_cnt = 0
+    abort_stop_hit_cancel_unconfirmed_cnt = 0
+    filled_during_stop_abort_cnt = 0
     for o in outcomes:
         fr = _safe_str(o.get("fallback_reason")).strip()
         if fr:
             fallback_reason_counts[fr] += 1
-        reason = _safe_str(o.get("reason")).strip().upper()
-        if reason.startswith("ABORT:NO_FILL_TIMEOUT"):
+        reason = _safe_str(o.get("reason")).strip()
+        reason_upper = reason.upper()
+        if reason:
+            outcome_reason_counts[reason] += 1
+        if reason_upper.startswith("ABORT:NO_FILL_TIMEOUT"):
             abort_no_fill_timeout_cnt += 1
+        if reason_upper == "ABORT:STOP_HIT_BEFORE_ENTRY_CANCEL_UNCONFIRMED":
+            abort_stop_hit_cancel_unconfirmed_cnt += 1
+        if reason_upper == "FILLED_DURING_STOP_ABORT":
+            filled_during_stop_abort_cnt += 1
     abort_no_fill_timeout_rate = (abort_no_fill_timeout_cnt / outcome_total) if outcome_total > 0 else 0.0
+    abort_stop_hit_cancel_unconfirmed_rate = (
+        abort_stop_hit_cancel_unconfirmed_cnt / outcome_total
+    ) if outcome_total > 0 else 0.0
+    filled_during_stop_abort_rate = (filled_during_stop_abort_cnt / outcome_total) if outcome_total > 0 else 0.0
 
     slippages: List[float] = []
     slippage_weights: List[float] = []
@@ -423,6 +440,13 @@ def _compute_metrics(
     else:
         go_no_go["missed_fill_increase_ok"] = "baseline_not_provided"
 
+    if thresholds.max_stop_abort_cancel_unconfirmed is not None:
+        go_no_go["stop_abort_cancel_unconfirmed_ok"] = (
+            abort_stop_hit_cancel_unconfirmed_cnt <= int(thresholds.max_stop_abort_cancel_unconfirmed)
+        )
+    else:
+        go_no_go["stop_abort_cancel_unconfirmed_ok"] = "not_configured"
+
     if thresholds.max_recon_orphans_detected is not None:
         go_no_go["recon_orphans_detected_ok"] = recon_orphans_detected_total <= int(thresholds.max_recon_orphans_detected)
     else:
@@ -466,8 +490,13 @@ def _compute_metrics(
             "env_forced_order_type_market_count": env_forced_market_cnt,
             "market_rate_by_bucket": dict(sorted(market_rate_by_bucket.items())),
             "fallback_reason_counts": dict(fallback_reason_counts),
+            "outcome_reason_counts": dict(outcome_reason_counts),
             "abort_no_fill_timeout_count": abort_no_fill_timeout_cnt,
             "abort_no_fill_timeout_rate": abort_no_fill_timeout_rate,
+            "abort_stop_hit_cancel_unconfirmed_count": abort_stop_hit_cancel_unconfirmed_cnt,
+            "abort_stop_hit_cancel_unconfirmed_rate": abort_stop_hit_cancel_unconfirmed_rate,
+            "filled_during_stop_abort_count": filled_during_stop_abort_cnt,
+            "filled_during_stop_abort_rate": filled_during_stop_abort_rate,
             "entry_slippage_trade_weighted_p90_bps": trade_slippage_p90,
             "entry_slippage_trade_weighted_p95_bps": trade_slippage_p95,
             "entry_slippage_notional_weighted_p90_bps": notional_slippage_p90,
@@ -513,9 +542,11 @@ def _print_summary(report: Dict[str, Any], files: List[Path], symbol: Optional[s
         )
     )
     print(
-        "env_forced_market_count={} abort_no_fill_timeout_rate={:.2%} atr_stale_market_violations={}".format(
+        "env_forced_market_count={} abort_no_fill_timeout_rate={:.2%} stop_abort_cancel_unconfirmed_rate={:.2%} filled_during_stop_abort_rate={:.2%} atr_stale_market_violations={}".format(
             int(m.get("env_forced_order_type_market_count") or 0),
             float(m.get("abort_no_fill_timeout_rate") or 0.0),
+            float(m.get("abort_stop_hit_cancel_unconfirmed_rate") or 0.0),
+            float(m.get("filled_during_stop_abort_rate") or 0.0),
             int(m.get("atr_stale_market_violations") or 0),
         )
     )
@@ -596,6 +627,12 @@ def main() -> int:
         default=20.0,
         help="Maximum allowed increase of ABORT:NO_FILL_TIMEOUT rate vs baseline.",
     )
+    parser.add_argument(
+        "--max-stop-abort-cancel-unconfirmed",
+        type=int,
+        default=None,
+        help="Optional max allowed count of ABORT:STOP_HIT_BEFORE_ENTRY_CANCEL_UNCONFIRMED outcomes.",
+    )
     parser.add_argument("--baseline-json", default=None, help="Optional previous report json for delta checks.")
     parser.add_argument("--output-json", default=None, help="Optional path to write report json.")
     parser.add_argument(
@@ -649,6 +686,9 @@ def main() -> int:
         extreme_market_max_rate=float(args.extreme_market_max_rate),
         atr_age_threshold_ms=int(args.atr_age_threshold_ms),
         missed_fill_increase_max_pct=float(args.missed_fill_increase_max_pct),
+        max_stop_abort_cancel_unconfirmed=(
+            int(args.max_stop_abort_cancel_unconfirmed) if args.max_stop_abort_cancel_unconfirmed is not None else None
+        ),
         max_recon_orphans_detected=(
             int(args.max_recon_orphans_detected) if args.max_recon_orphans_detected is not None else None
         ),
