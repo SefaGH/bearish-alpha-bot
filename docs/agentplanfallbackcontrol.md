@@ -79,19 +79,21 @@ Timeout → Cancel limit → Chase gate kontrolü → Config flag kontrolü → 
       cancel race        sapması (bps)          ve flag check        fikri SORULMAZ
 ```
 
-### 5. Nihai Karar (Bu Faz): Soft Gate-Only
+### 5. Nihai Karar (Bu Faz): Soft Gate Ağırlıklı + Hard Chase Kill-Switch
 
-Bu fazda **hard veto uygulanmayacak**.  
-Timeout sonrası market fallback kararı için yalnızca **esnek soft gate (min 2/3 pass)** kullanılacak.
+Bu fazda karar yükü **soft gate** tarafında olacak.  
+`hard chase` akışta kalacak ama yalnızca **katastrofik fiyat kovalamayı kesen son emniyet freni** rolünde çalışacak.
 
 ```
-Timeout → Cancel limit → Chase gate → Config flag → Position-delta check
-       → ⭐ Soft Gate (2/3) → MARKET (allow) / ABORT (block)
+Timeout → Cancel/Position verification
+       → Hard chase kill-switch (katastrofik durum)
+       → ⭐ Soft Gate (min 3/4 pass)
+       → MARKET (allow) / ABORT (block)
 ```
 
 ### 6. Uygulanan Model (Kodda)
 
-`soft gate` üç kontrolden oluşur:
+`soft gate` dört kontrolden oluşur:
 
 1. `edge_preserved`
    - Fallback fiyatında hesaplanan anlık RR, minimum eşiğin üstünde mi?
@@ -99,9 +101,13 @@ Timeout → Cancel limit → Chase gate → Config flag → Position-delta check
    - Referans girişe göre ters hareket belirlenen bps eşiğini aşıyor mu?
 3. `execution_quality`
    - Anlık spread (bid/ask) market fallback için kabul edilebilir mi?
+4. `peak_distance`
+   - Limit bekleme penceresindeki ekstrem fiyat ile timeout anındaki mevcut fiyat arasındaki fark kabul edilebilir mi?
+   - `short`: `wait_window_max -> current`
+   - `long`: `wait_window_min -> current`
 
 Karar:
-- `min_passes=2` ise en az 2 gate PASS olmalı.
+- `min_passes=3` ise en az 3 gate PASS olmalı.
 - Yetersiz veri (NA) durumunda `fail_closed_on_insufficient_context=false` ise sistem işlem açmayı tamamen durdurmaz (risk almayı sürdürür).
 
 ### 7. Güvenli Mimari Notu
@@ -124,13 +130,20 @@ Bu nedenle fallback soft-gate bağlamı `order_request["_internal"]` içinde ta�
    - Varsayılan scope: `adaptive_str` (config ile genişletilebilir).
 
 3. `config/config.example.yaml`
-   - `order_manager` altında soft gate ayarları eklendi:
+   - `order_manager` altında timeout fallback ayarları eklendi:
+     - `fallback_hard_chase_enabled`
+     - `fallback_hard_chase_floor_bps`
+     - `fallback_hard_chase_min_bps`
+     - `fallback_hard_chase_max_bps`
+     - `fallback_hard_chase_atr_k`
+     - `fallback_hard_chase_spread_m`
      - `fallback_soft_gate_enabled`
      - `fallback_soft_gate_apply_to_strategies`
      - `fallback_soft_gate_min_passes`
      - `fallback_soft_gate_rr_min`
      - `fallback_soft_gate_max_adverse_bps`
      - `fallback_soft_gate_max_spread_bps`
+     - `fallback_soft_gate_max_peak_distance_bps`
      - `fallback_soft_gate_fail_closed_on_insufficient_context`
 
 ### 9. SafetyOverride ile Konumlandırma
@@ -138,10 +151,10 @@ Bu nedenle fallback soft-gate bağlamı `order_request["_internal"]` içinde ta�
 | Başlık | SafetyOverride | Timeout Soft Gate |
 |--------|----------------|-------------------|
 | Aşama | Pre-trade (signal accept) | Execution-time (timeout fallback) |
-| Mantık | 2/3 gate | 2/3 gate |
+| Mantık | 3/3 gate | Hard kill-switch + 3/4 gate |
 | Amaç | Aşırı agresif sinyali elemek | Kör market fallback'i azaltmak |
 
-Yani fallback katmanı da SafetyOverride gibi çoğunluk bazlıdır; ancak hard veto eklenmediği için botun risk alma kapasitesi korunur.
+Yani fallback katmanı SafetyOverride gibi çoğunluk bazlı karar mantığı kullanırken, hard chase sadece katastrofik senaryolarda devreye giren son fren olarak konumlanır.
 
 ### 10. İzleme Kriterleri (Aşırı Korumacılığı Önlemek İçin)
 
@@ -150,3 +163,101 @@ Yani fallback katmanı da SafetyOverride gibi çoğunluk bazlıdır; ancak hard 
 3. `post-fallback stop-out rate` düşmüyorsa gate kalitesi yetersizdir.
 
 Bu fazın hedefi: fallback kalitesini artırırken botu pasifleştirmemek.
+
+### 11. Nihai Akış
+
+1. `timeout` sonrası limit emir iptal edilir, `position verification` ile kısmi/dolmuş durumlar temizlenir.
+2. `hard_chase_kill_switch` çalışır:
+   - Primary filtre değildir.
+   - Sadece aşırı kötü fiyat kovalamada ABORT üretir.
+3. `soft_gate` ana karar katmanıdır:
+   - `edge_preserved`
+   - `direction_continuity`
+   - `execution_quality`
+   - `peak_distance`
+4. Karar kuralı: en az `3/4 PASS` ise market fallback, aksi durumda ABORT.
+5. NA bağlamında `fail_closed_on_insufficient_context=false` ile bot tamamen pasifleşmez; kontrollü risk alma korunur.
+
+### 12. Uygulama Patch Planı
+
+1. `src/core/order_manager.py` — Hard chase'i kill-switch olarak konumlandır
+   - Timeout sonrası, cancel/verification tamamlandıktan hemen sonra çalıştır.
+   - Eşik yapısı:
+     - Statik taban: `hard_chase_floor_bps`
+     - Opsiyonel dinamik katkı: `atr_bps * k + spread_bps * m`
+     - Clamp: `hard_chase_min_bps` - `hard_chase_max_bps` (ör. `20-60`)
+   - Sadece katastrofik durumda `ABORT:HARD_CHASE_KILL:<value>` üret.
+   - Primary kalite filtresi gibi davranmamalı.
+
+2. `src/core/order_manager.py` — Soft gate'i ana karar katmanı olarak sabitle
+   - Sıralama: `hard_chase_kill_switch -> soft_gate`.
+   - `min_passes=3` varsayılanını koru.
+   - 4 gate:
+     - `edge_preserved`
+     - `direction_continuity`
+     - `execution_quality`
+     - `peak_distance` (wait-window ekstremine göre)
+   - Block reason: `ABORT:FALLBACK_SOFT_GATE:<reason>`.
+
+3. `src/core/live_trading_engine.py` — Soft gate/hard chase policy aktarımı
+   - `order_request["_internal"]` içine fallback policy ekle.
+   - Strategy scope default: `adaptive_str`.
+   - Runtime bağlamı (signal ref, state snapshot, entry ref) tutarlı taşınsın.
+
+4. `config/config.example.yaml` — Operasyonel ayarları netleştir
+   - Soft gate:
+     - `fallback_soft_gate_min_passes: 3`
+     - `fallback_soft_gate_rr_min`
+     - `fallback_soft_gate_max_adverse_bps`
+     - `fallback_soft_gate_max_spread_bps`
+     - `fallback_soft_gate_max_peak_distance_bps`
+   - Hard chase kill-switch:
+     - `fallback_hard_chase_enabled`
+     - `fallback_hard_chase_floor_bps`
+     - `fallback_hard_chase_min_bps`
+     - `fallback_hard_chase_max_bps`
+     - `fallback_hard_chase_atr_k`
+     - `fallback_hard_chase_spread_m`
+
+5. `tests/test_execution_backend.py` — Kabul testleri
+   - Limit timeout + katastrofik sapma: hard chase ABORT.
+   - Limit timeout + normal sapma: hard chase geçer, karar soft gate'e kalır.
+   - Soft gate `3/4` pass: market fallback ALLOW.
+   - Soft gate `<3/4`: ABORT.
+   - `peak_distance` gate PASS/FAIL senaryoları.
+   - NA bağlamında `fail_closed_on_insufficient_context=false` davranışı.
+
+6. Doğrulama ve rollout
+   - Test komutu: `pytest -q tests/test_execution_backend.py -k soft_gate`
+   - Gözlem metrikleri:
+     - `fallback_block_rate`
+     - `hard_chase_abort_rate`
+     - `post_fallback_expectancy`
+   - 1 haftalık izleme sonrası eşik ince ayarı yap.
+
+### 13. Operasyon Checklist (Canlı İzleme)
+
+1. Günlük takip (seans sonu)
+   - `hard_chase_abort_rate = hard_chase_abort / fallback_attempt`
+   - `fallback_block_rate = soft_gate_block / fallback_attempt`
+   - `post_fallback_expectancy = avg(pnl_after_fallback)`
+
+2. Hedef davranış
+   - `hard_chase_abort_rate` düşük kalmalı (kill-switch nadir çalışmalı).
+   - `fallback_block_rate` orta bantta olmalı (ne kör izin ne aşırı blok).
+   - `post_fallback_expectancy` 0 üstünde kalmalı.
+
+3. Aksiyon matrisi
+   - `hard_chase_abort_rate` yüksekse:
+     - `fallback_hard_chase_floor_bps` artır
+     - veya `fallback_hard_chase_max_bps` artır
+   - `fallback_block_rate` yüksekse:
+     - `fallback_soft_gate_max_adverse_bps` veya `fallback_soft_gate_max_peak_distance_bps` artır
+   - `post_fallback_expectancy` negatifse:
+     - `fallback_soft_gate_rr_min` artır
+     - `fallback_soft_gate_max_spread_bps` düşür
+
+4. Haftalık kalibrasyon disiplini
+   - Her hafta yalnızca 1-2 parametre değiştir.
+   - Değişiklik sonrası en az 3 gün veri biriktirmeden yeni ayar yapma.
+   - Kararı tek trade ile değil, toplu dağılım (MAE/MFE + expectancy) ile ver.

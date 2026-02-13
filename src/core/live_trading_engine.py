@@ -844,13 +844,23 @@ class LiveTradingEngine:
 
             soft_gate_cfg = {
                 "enabled": soft_gate_enabled,
-                "min_passes": int(_safe_float_local(cfg_om.get("fallback_soft_gate_min_passes"), 2.0)),
+                "min_passes": int(_safe_float_local(cfg_om.get("fallback_soft_gate_min_passes"), 3.0)),
                 "rr_min": _safe_float_local(cfg_om.get("fallback_soft_gate_rr_min"), 1.2),
                 "max_adverse_bps": _safe_float_local(cfg_om.get("fallback_soft_gate_max_adverse_bps"), 15.0),
                 "max_spread_bps": _safe_float_local(cfg_om.get("fallback_soft_gate_max_spread_bps"), 8.0),
+                "max_peak_distance_bps": _safe_float_local(cfg_om.get("fallback_soft_gate_max_peak_distance_bps"), 20.0),
                 "fail_closed_on_insufficient_context": bool(
                     _safe_bool(cfg_om.get("fallback_soft_gate_fail_closed_on_insufficient_context")) or False
                 ),
+            }
+            hard_chase_enabled_cfg = _safe_bool(cfg_om.get("fallback_hard_chase_enabled")) if isinstance(cfg_om, dict) else None
+            hard_chase_cfg = {
+                "enabled": True if hard_chase_enabled_cfg is None else bool(hard_chase_enabled_cfg),
+                "floor_bps": _safe_float_local(cfg_om.get("fallback_hard_chase_floor_bps"), 25.0),
+                "min_bps": _safe_float_local(cfg_om.get("fallback_hard_chase_min_bps"), 20.0),
+                "max_bps": _safe_float_local(cfg_om.get("fallback_hard_chase_max_bps"), 60.0),
+                "atr_k": _safe_float_local(cfg_om.get("fallback_hard_chase_atr_k"), 1.5),
+                "spread_m": _safe_float_local(cfg_om.get("fallback_hard_chase_spread_m"), 2.0),
             }
             side_norm = str(signal.get('side', '') or '').lower()
             order_type_hint = (
@@ -1189,6 +1199,7 @@ class LiveTradingEngine:
                 "strategy_name": signal.get("strategy_name") or signal.get("strategy"),
                 "signal_created_ts_ms": signal_ts_ms,
                 "signal_entry_ref": signal.get("entry_raw") or signal.get("entry"),
+                "fallback_hard_chase": hard_chase_cfg,
                 "fallback_soft_gate": soft_gate_cfg,
                 "latest_strategy_state": latest_strategy_state if isinstance(latest_strategy_state, dict) else None,
             }

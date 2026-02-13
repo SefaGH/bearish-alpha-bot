@@ -63,6 +63,12 @@ class FakeLimitTimeoutChaseGateCcxtClient(FakeLimitTimeoutCcxtClient):
         return {"last": 101.0}
 
 
+class FakeLimitTimeoutModerateChaseShortCcxtClient(FakeLimitTimeoutCcxtClient):
+    def ticker(self, symbol: str):
+        # Moderate chase distance for SHORT (~22.6 bps from reference=100.0).
+        return {"last": 99.774, "bid": 99.770, "ask": 99.778}
+
+
 class FakeLimitTimeoutRaceFillCcxtClient(FakeLimitTimeoutCcxtClient):
     def __init__(self, filled_qty: float = 0.01):
         super().__init__()
@@ -93,6 +99,20 @@ class FakeLimitTimeoutSoftGateBlockCcxtClient(FakeLimitTimeoutCcxtClient):
 class FakeLimitTimeoutSoftGateAllowCcxtClient(FakeLimitTimeoutCcxtClient):
     def ticker(self, symbol: str):
         # Tight spread + no adverse drift => soft-gate allows fallback.
+        return {"last": 100.0, "bid": 99.99, "ask": 100.01}
+
+
+class FakeLimitTimeoutPeakDistanceSequenceCcxtClient(FakeLimitTimeoutCcxtClient):
+    def __init__(self):
+        super().__init__()
+        self._tick_count = 0
+
+    def ticker(self, symbol: str):
+        self._tick_count += 1
+        if self._tick_count == 1:
+            # First sample inside waiting window (local high for SHORT).
+            return {"last": 101.0, "bid": 100.99, "ask": 101.01}
+        # Timeout decision sample.
         return {"last": 100.0, "bid": 99.99, "ask": 100.01}
 
 
@@ -348,8 +368,50 @@ def test_limit_timeout_aborts_on_chase_gate_before_market_fallback(clean_env):
     )
 
     assert result["success"] is False
-    assert str(result.get("reason") or "").startswith("ABORT:CHASE_GATE:")
+    assert str(result.get("reason") or "").startswith("ABORT:HARD_CHASE_KILL:")
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback_hard_chase_killed"
     assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_hard_chase_uses_relaxed_floor_for_legacy_gate(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutModerateChaseShortCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "short",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 110.0},
+                "limit_price": 100.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "max_chase_bps": 12.0,
+                    "market_fallback_on_timeout_enabled": True,
+                    "fallback_require_position_delta_verification": False,
+                },
+                "_internal": {"fallback_soft_gate": {"enabled": False}},
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is True
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback"
+    assert result.get("effective_order_type") == "market"
+    hard = result.get("fallback_hard_chase") or {}
+    assert hard.get("reason") == "fallback_hard_chase_pass"
+    assert float(hard.get("chase_bps") or 0.0) > 20.0
+    assert float(hard.get("kill_bps") or 0.0) >= 25.0
+    assert [c["type"] for c in client.create_order_calls] == ["limit", "market"]
 
 
 def test_limit_timeout_skip_market_when_position_delta_indicates_fill(clean_env):
@@ -551,6 +613,55 @@ def test_limit_timeout_market_fallback_soft_gate_allows_when_min_passes_met(clea
     assert isinstance(result.get("fallback_soft_gate"), dict)
     assert result["fallback_soft_gate"].get("reason") == "fallback_soft_gate_pass"
     assert [c["type"] for c in client.create_order_calls] == ["limit", "market"]
+
+
+def test_limit_timeout_market_fallback_soft_gate_tracks_peak_distance(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutPeakDistanceSequenceCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "short",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 110.0, "target": 97.0},
+                "limit_price": 100.5,
+                "execution_params": {
+                    "timeout_seconds": 0.1,
+                    "poll_interval_s": 0.01,
+                    "market_fallback_on_timeout_enabled": True,
+                    "max_chase_bps": 150.0,
+                },
+                "_internal": {
+                    "fallback_soft_gate": {
+                        "enabled": True,
+                        "min_passes": 4,
+                        "rr_min": 0.2,
+                        "max_adverse_bps": 50.0,
+                        "max_spread_bps": 8.0,
+                        "max_peak_distance_bps": 20.0,
+                        "fail_closed_on_insufficient_context": False,
+                    }
+                },
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is False
+    assert str(result.get("reason") or "").startswith("ABORT:FALLBACK_SOFT_GATE:")
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback_soft_gate_blocked"
+    soft = result.get("fallback_soft_gate") or {}
+    assert "peak_distance" in (soft.get("fails") or [])
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
 
 
 def test_limit_stop_hit_abort_requires_cancel_confirmation(clean_env):

@@ -84,6 +84,7 @@ from .bingx_vst_balance import BingxVstBalanceError, create_vst_balance_client_f
 from .live_trading_engine import LiveTradingEngine
 from .market_data_pipeline import MarketDataPipeline
 from .indicator_validator import IndicatorValidator
+from core.rsi_zone_router import build_rsi_zone_snapshot, is_strategy_allowed, snapshot_to_dict
 
 
 # Strategy imports - DÜZELTILDI
@@ -206,6 +207,59 @@ class ProductionCoordinator:
             return float(value) if value is not None else None
         except Exception:
             return None
+
+    def _get_rsi_zone_router_cfg(self) -> Dict[str, Any]:
+        cfg = self.config if isinstance(self.config, dict) else {}
+        strategies_cfg = cfg.get("strategies", {}) if isinstance(cfg.get("strategies"), dict) else {}
+        router_cfg = strategies_cfg.get("rsi_zone_router", {})
+        if router_cfg is not None and not isinstance(router_cfg, dict):
+            return {}
+        return dict(router_cfg) if isinstance(router_cfg, dict) else {}
+
+    @staticmethod
+    def _find_strategy_instance_by_aliases(strategies: Dict[str, Any], aliases: set[str]) -> Optional[Any]:
+        if not isinstance(strategies, dict) or not aliases:
+            return None
+        normalized_aliases = {str(a).strip().lower() for a in aliases if str(a).strip()}
+        if not normalized_aliases:
+            return None
+        for name, instance in strategies.items():
+            name_norm = str(name).strip().lower()
+            strategy_name_norm = str(getattr(instance, "strategy_name", "") or "").strip().lower()
+            if name_norm in normalized_aliases or strategy_name_norm in normalized_aliases:
+                return instance
+        return None
+
+    def _build_symbol_rsi_zone_snapshot(
+        self,
+        *,
+        symbol: str,
+        df_slow: Optional[pd.DataFrame],
+        df_fast: Optional[pd.DataFrame],
+        regime_data: Optional[Dict[str, Any]],
+        strategies: Dict[str, Any],
+        router_cfg: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(router_cfg, dict) or not bool(router_cfg.get("enabled", False)):
+            return None
+        ob_strategy = self._find_strategy_instance_by_aliases(
+            strategies,
+            {"adaptive_ob", "oversold_bounce"},
+        )
+        str_strategy = self._find_strategy_instance_by_aliases(
+            strategies,
+            {"adaptive_str", "short_the_rip", "adaptive_short_the_rip"},
+        )
+        snapshot = build_rsi_zone_snapshot(
+            symbol=str(symbol),
+            df_slow=df_slow,
+            df_fast=df_fast,
+            regime_data=regime_data if isinstance(regime_data, dict) else {},
+            ob_strategy=ob_strategy,
+            str_strategy=str_strategy,
+            router_cfg=router_cfg,
+        )
+        return snapshot_to_dict(snapshot)
 
     def _emit_signal_breakdown(self, signal: Dict[str, Any]) -> None:
         """Emit a StrategyCoordinator-compatible SIGNAL_BREAKDOWN line.
@@ -930,12 +984,15 @@ class ProductionCoordinator:
              logger.error("❌ PortfolioManager or strategies not initialized. Cannot process loop.")
              return
         strategies_to_run = list(self.portfolio_manager.strategies.items())
+        strategies_map = dict(strategies_to_run)
         hybrid_allowlist = {"adaptive_ob", "adaptive_str"}
         hybrid_strategies = {
             name
             for name, instance in strategies_to_run
             if (name in hybrid_allowlist) or (getattr(instance, "strategy_name", "") in hybrid_allowlist)
         }
+        rsi_router_cfg = self._get_rsi_zone_router_cfg()
+        rsi_router_enabled = bool(rsi_router_cfg.get("enabled", False))
 
         mean_reversion_strategy_key = None
         mean_reversion_instance = None
@@ -1204,11 +1261,47 @@ class ProductionCoordinator:
                         }
                     )
 
+            rsi_zone_snapshot = None
+            if rsi_router_enabled:
+                rsi_zone_snapshot = self._build_symbol_rsi_zone_snapshot(
+                    symbol=symbol,
+                    df_slow=df_30m_closed if df_30m_closed is not None and not df_30m_closed.empty else df_30m,
+                    df_fast=df_5m,
+                    regime_data=regime_data,
+                    strategies=strategies_map,
+                    router_cfg=rsi_router_cfg,
+                )
+                if rsi_zone_snapshot is None:
+                    logger.warning(
+                        "[RSI-ROUTER] Snapshot unavailable for %s (router enabled); failing open for this cycle.",
+                        symbol,
+                    )
+                else:
+                    market_data["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
+
             for strategy_name, strategy_instance in strategies_to_run:
                 try:
                     if not self.portfolio_manager.strategy_metadata.get(strategy_name, {}).get('active', False):
                         logger.debug(f"Skipping inactive strategy: {strategy_name}")
                         continue
+
+                    gate_strategy_name = str(getattr(strategy_instance, "strategy_name", "") or strategy_name)
+                    if rsi_router_enabled and rsi_zone_snapshot is not None:
+                        allowed, reason_code = is_strategy_allowed(
+                            gate_strategy_name,
+                            None,
+                            rsi_zone_snapshot,
+                            rsi_router_cfg,
+                        )
+                        if not allowed:
+                            logger.info(
+                                "[RSI-ROUTER] Skip | symbol=%s | strategy=%s | reason=%s | zone=%s",
+                                symbol,
+                                gate_strategy_name,
+                                reason_code,
+                                rsi_zone_snapshot.get("zone"),
+                            )
+                            continue
                     
                     if hasattr(strategy_instance, 'signal') and callable(getattr(strategy_instance, 'signal')):
                         # ✅ FIX: Pass the fresh ml_context directly to the strategy's 'signal' method
@@ -1223,6 +1316,10 @@ class ProductionCoordinator:
                             'symbol': symbol,
                             'ml_context': ml_context,  # Pass it again for explicit clarity
                         }
+                        if isinstance(rsi_router_cfg, dict):
+                            signal_kwargs["rsi_zone_router_cfg"] = dict(rsi_router_cfg)
+                        if isinstance(rsi_zone_snapshot, dict):
+                            signal_kwargs["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
                         if isinstance(shock_snapshot, dict):
                             signal_kwargs["shock_state"] = shock_snapshot.get("state")
                             signal_kwargs["shock_score"] = shock_snapshot.get("shock_score")
@@ -1820,6 +1917,9 @@ class ProductionCoordinator:
         decision_meta: Dict[str, Any] = {}
         rearm_interval_ms = None
         final_reason = None
+        rsi_router_cfg = self._get_rsi_zone_router_cfg()
+        rsi_router_enabled = bool(rsi_router_cfg.get("enabled", False))
+        rsi_zone_snapshot: Optional[Dict[str, Any]] = None
         try:
             if not symbol or not strategy:
                 error_code = "invalid_args"
@@ -1874,6 +1974,8 @@ class ProductionCoordinator:
             regime_data = None
             shock_state = None
             shock_score = None
+            router_df_slow = None
+            router_df_fast = None
 
             def _coerce_finite_float(value: Any) -> Optional[float]:
                 try:
@@ -2012,6 +2114,7 @@ class ProductionCoordinator:
                 strategy_df_30m = df_30m_closed
                 if df_30m_hybrid is not None and not getattr(df_30m_hybrid, "empty", True):
                     strategy_df_30m = df_30m_hybrid
+                router_df_slow = strategy_df_30m if strategy_df_30m is not None else df_30m_closed
 
                 # Ensure Adaptive_OB can access fast timeframes during recheck decisions.
                 if strategy in {"adaptive_ob", "adaptive_str"}:
@@ -2027,6 +2130,7 @@ class ProductionCoordinator:
                     except Exception:
                         df_1m = None
                         df_5m = None
+                router_df_fast = df_5m
 
                 signal_kwargs.update(
                     {
@@ -2109,6 +2213,8 @@ class ProductionCoordinator:
                 if df_vwap is None or getattr(df_vwap, "empty", False) or df_sig is None or getattr(df_sig, "empty", False):
                     error_code = "missing_ohlcv_mean_reversion"
                     return {"dispatched": False, "rearm_fast_watch": False} if return_detail else False
+                if str(signal_tf_str).strip().lower() == "5m":
+                    router_df_fast = df_sig
                 try:
                     rows_returned_by_tf[vwap_tf_str] = int(len(df_vwap))
                 except Exception:
@@ -2133,6 +2239,7 @@ class ProductionCoordinator:
                                 df_reg_30m, df_reg_1h, df_reg_4h
                             )
                             signal_kwargs["regime_data"] = regime_data
+                            router_df_slow = df_reg_30m
                     except Exception:
                         pass
 
@@ -2166,6 +2273,68 @@ class ProductionCoordinator:
                 if shock_score is not None:
                     signal_kwargs["shock_score"] = shock_score
 
+            if rsi_router_enabled:
+                try:
+                    if router_df_slow is None and self.market_data_pipeline:
+                        router_df_slow = await self.market_data_pipeline.get_latest_ohlcv(
+                            symbol, "30m", limit=250, include_forming=False
+                        )
+                except Exception:
+                    router_df_slow = None
+
+                source_cfg = rsi_router_cfg.get("source", {}) if isinstance(rsi_router_cfg.get("source"), dict) else {}
+                mode = str(source_cfg.get("mode", "slow_only") or "slow_only").strip().lower()
+                if mode == "consensus" and router_df_fast is None:
+                    try:
+                        if self.market_data_pipeline:
+                            router_df_fast = await self.market_data_pipeline.get_latest_ohlcv(symbol, "5m", limit=250)
+                    except Exception:
+                        router_df_fast = None
+
+                rsi_zone_snapshot = self._build_symbol_rsi_zone_snapshot(
+                    symbol=symbol,
+                    df_slow=router_df_slow,
+                    df_fast=router_df_fast,
+                    regime_data=regime_data,
+                    strategies=strategies,
+                    router_cfg=rsi_router_cfg,
+                )
+                if rsi_zone_snapshot is None:
+                    logger.warning(
+                        "[RSI-ROUTER] Snapshot unavailable during dispatch_strategy | symbol=%s | strategy=%s | fail-open",
+                        symbol,
+                        str(getattr(strategy_instance, "strategy_name", "") or strategy),
+                    )
+                else:
+                    gate_strategy_name = str(getattr(strategy_instance, "strategy_name", "") or strategy)
+                    allowed, reason_code = is_strategy_allowed(
+                        gate_strategy_name,
+                        canonical_side,
+                        rsi_zone_snapshot,
+                        rsi_router_cfg,
+                    )
+                    if not allowed:
+                        logger.info(
+                            "[RSI-ROUTER] Recheck blocked | symbol=%s | strategy=%s | reason=%s | zone=%s",
+                            symbol,
+                            gate_strategy_name,
+                            reason_code,
+                            rsi_zone_snapshot.get("zone"),
+                        )
+                        outcome = "no_signal"
+                        final_reason = str(reason_code or "rsi_router.zone_mismatch")
+                        return {
+                            "dispatched": False,
+                            "rearm_fast_watch": False,
+                            "decision_meta": {},
+                            "final_reason": final_reason,
+                        } if return_detail else False
+
+            if isinstance(rsi_router_cfg, dict):
+                signal_kwargs["rsi_zone_router_cfg"] = dict(rsi_router_cfg)
+            if isinstance(rsi_zone_snapshot, dict):
+                signal_kwargs["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
+
             try:
                 if "market_data" in inspect.signature(strategy_instance.signal).parameters:
                     market_data: Dict[str, Any] = {}
@@ -2195,6 +2364,8 @@ class ProductionCoordinator:
                                 "df_5m": df_5m,
                             }
                         )
+                    if isinstance(rsi_zone_snapshot, dict):
+                        market_data["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
                     signal_kwargs["market_data"] = market_data
             except Exception:
                 pass

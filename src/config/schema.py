@@ -120,6 +120,79 @@ def _validate_promote_override_rollout(config_data: Dict[str, Any]) -> List[Tupl
     return errors
 
 
+def _validate_rsi_zone_router(config_data: Dict[str, Any]) -> List[Tuple[str, str]]:
+    errors: List[Tuple[str, str]] = []
+    strategies = config_data.get("strategies")
+    if not isinstance(strategies, dict):
+        return errors
+
+    router_cfg = strategies.get("rsi_zone_router")
+    if router_cfg is None:
+        return errors
+    if not isinstance(router_cfg, dict):
+        errors.append(("strategies.rsi_zone_router", "must be a mapping/object"))
+        return errors
+
+    source_cfg = router_cfg.get("source")
+    if source_cfg is not None and not isinstance(source_cfg, dict):
+        errors.append(("strategies.rsi_zone_router.source", "must be a mapping/object"))
+    elif isinstance(source_cfg, dict):
+        mode = source_cfg.get("mode")
+        if mode is not None:
+            if not isinstance(mode, str):
+                errors.append(("strategies.rsi_zone_router.source.mode", "must be one of: slow_only|consensus"))
+            else:
+                mode_norm = mode.strip().lower()
+                if mode_norm not in {"slow_only", "consensus"}:
+                    errors.append(
+                        (
+                            "strategies.rsi_zone_router.source.mode",
+                            f"invalid value '{mode}'; allowed: slow_only|consensus",
+                        )
+                    )
+
+    thresholds_cfg = router_cfg.get("thresholds")
+    if thresholds_cfg is not None and not isinstance(thresholds_cfg, dict):
+        errors.append(("strategies.rsi_zone_router.thresholds", "must be a mapping/object"))
+    elif isinstance(thresholds_cfg, dict):
+        for key in ("ob_floor", "ob_cap", "str_floor", "str_cap", "min_gap"):
+            raw = thresholds_cfg.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except Exception:
+                errors.append((f"strategies.rsi_zone_router.thresholds.{key}", "must be a finite number"))
+                continue
+            if value != value or value in (float("inf"), float("-inf")):
+                errors.append((f"strategies.rsi_zone_router.thresholds.{key}", "must be a finite number"))
+        raw_min_gap = thresholds_cfg.get("min_gap")
+        if raw_min_gap is not None:
+            try:
+                min_gap = float(raw_min_gap)
+                if min_gap <= 0:
+                    errors.append(("strategies.rsi_zone_router.thresholds.min_gap", "must be > 0"))
+            except Exception:
+                pass
+
+    transition_cfg = router_cfg.get("transition")
+    if transition_cfg is not None and not isinstance(transition_cfg, dict):
+        errors.append(("strategies.rsi_zone_router.transition", "must be a mapping/object"))
+    elif isinstance(transition_cfg, dict):
+        raw_width = transition_cfg.get("width")
+        if raw_width is not None:
+            try:
+                width = float(raw_width)
+                if width < 0:
+                    errors.append(("strategies.rsi_zone_router.transition.width", "must be >= 0"))
+                elif width != width or width in (float("inf"), float("-inf")):
+                    errors.append(("strategies.rsi_zone_router.transition.width", "must be a finite number"))
+            except Exception:
+                errors.append(("strategies.rsi_zone_router.transition.width", "must be a finite number"))
+
+    return errors
+
+
 def _iter_pct_violations(config: Any) -> List[Tuple[str, str]]:
     violations: List[Tuple[str, str]] = []
 
@@ -212,6 +285,7 @@ def validate_config_safety(config_data: Dict[str, Any]) -> None:
 
     errors.extend(_iter_pct_violations(config_data))
     errors.extend(_validate_promote_override_rollout(config_data))
+    errors.extend(_validate_rsi_zone_router(config_data))
 
     if errors:
         rendered = "\n".join(f"- {path}: {msg}" for path, msg in errors)

@@ -88,14 +88,23 @@ order_manager:
   disable_market_fallback_on_extreme_bucket: true
   disable_market_fallback_on_fast_move: true
   fallback_require_position_delta_verification: true
-  # Soft gate-first rollout for timeout->market fallback (no hard veto in phase-1).
+  # Timeout fallback protection layers:
+  # 1) hard chase kill-switch: only catastrophic late-entry moves
+  # 2) soft gate: primary quality decision (min passes)
+  fallback_hard_chase_enabled: true
+  fallback_hard_chase_floor_bps: 25.0
+  fallback_hard_chase_min_bps: 20.0
+  fallback_hard_chase_max_bps: 60.0
+  fallback_hard_chase_atr_k: 1.5
+  fallback_hard_chase_spread_m: 2.0
   fallback_soft_gate_enabled: true
   fallback_soft_gate_apply_to_strategies:
     - "adaptive_str"
-  fallback_soft_gate_min_passes: 2
+  fallback_soft_gate_min_passes: 3
   fallback_soft_gate_rr_min: 1.2
   fallback_soft_gate_max_adverse_bps: 15.0
   fallback_soft_gate_max_spread_bps: 8.0
+  fallback_soft_gate_max_peak_distance_bps: 20.0
   fallback_soft_gate_fail_closed_on_insufficient_context: false
 
 # ==============================================================================
@@ -682,7 +691,7 @@ safety_override:
     - "sell"
     - "short"
   aggressive_threshold_delta_min: 0.1
-  min_passes: 2
+  min_passes: 3
   fail_closed_on_insufficient_context: true
   gates:
     trend:
@@ -839,6 +848,33 @@ strategies:
     default:
       preferred_priority: 0.5         # Override with: REGIME_DEFAULT_PRIORITY
       fallback_priority: 0.4          # Override with: REGIME_DEFAULT_FALLBACK
+
+  # RSI Zone Router (Pragmatic Minimum v1)
+  # Purpose:
+  # - Central zone gate before strategy calls.
+  # - Same gate in recheck (dispatch_strategy) path.
+  # - MR has an internal soft-deferral safety guard.
+  # Default is fail-safe OFF for backward compatibility; enable progressively via canary rollout.
+  rsi_zone_router:
+    enabled: true                     # Override with: STRATEGIES__RSI_ZONE_ROUTER__ENABLED
+    source:
+      mode: "consensus"               # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOURCE__MODE ; slow_only | consensus
+      slow_tf: "30m"                  # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOURCE__SLOW_TF
+      fast_tf: "5m"                   # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOURCE__FAST_TF
+    thresholds:
+      ob_floor: 10.0                  # Override with: STRATEGIES__RSI_ZONE_ROUTER__THRESHOLDS__OB_FLOOR
+      ob_cap: 45.0                    # Override with: STRATEGIES__RSI_ZONE_ROUTER__THRESHOLDS__OB_CAP
+      str_floor: 55.0                 # Override with: STRATEGIES__RSI_ZONE_ROUTER__THRESHOLDS__STR_FLOOR
+      str_cap: 90.0                   # Override with: STRATEGIES__RSI_ZONE_ROUTER__THRESHOLDS__STR_CAP
+      min_gap: 8.0                    # Override with: STRATEGIES__RSI_ZONE_ROUTER__THRESHOLDS__MIN_GAP
+    transition:
+      width: 5.0                      # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__WIDTH
+      no_trade_new_entry: true        # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__NO_TRADE_NEW_ENTRY
+    soft_deferral:
+      cancel_on_zone_mismatch: true   # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOFT_DEFERRAL__CANCEL_ON_ZONE_MISMATCH
+    telemetry:
+      enabled: true                   # Override with: STRATEGIES__RSI_ZONE_ROUTER__TELEMETRY__ENABLED
+      log_state_changes_only: true    # Override with: STRATEGIES__RSI_ZONE_ROUTER__TELEMETRY__LOG_STATE_CHANGES_ONLY
 
   adaptive_ob:
     execution_profile: "standard_mode"  # Hybrid: DCA+pyramiding enabled

@@ -11,6 +11,7 @@ from .base_strategy import BaseStrategy
 from .mr_controller import DynamicMRController, MRControllerDecision
 from core.indicators import rsi as calc_rsi
 from core.logger import get_current_run_id
+from core.rsi_zone_router import is_strategy_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -1574,6 +1575,14 @@ class VWAPMeanReversion(BaseStrategy):
             regime_data = None
         shock_state = kwargs.get("shock_state")
         shock_score = kwargs.get("shock_score")
+        rsi_zone_snapshot = kwargs.get("rsi_zone_snapshot")
+        if rsi_zone_snapshot is not None and not isinstance(rsi_zone_snapshot, dict):
+            rsi_zone_snapshot = None
+        rsi_zone_router_cfg = kwargs.get("rsi_zone_router_cfg")
+        if rsi_zone_router_cfg is not None and not isinstance(rsi_zone_router_cfg, dict):
+            rsi_zone_router_cfg = None
+        rsi_zone_router_cfg = dict(rsi_zone_router_cfg) if isinstance(rsi_zone_router_cfg, dict) else {}
+        rsi_router_enabled = bool(rsi_zone_router_cfg.get("enabled", False))
         try:
             shock_score = float(shock_score) if shock_score is not None else None
         except Exception:
@@ -1748,6 +1757,43 @@ class VWAPMeanReversion(BaseStrategy):
             except Exception:
                 logger.info("mr_recheck_eval %s", out)
             return out
+
+        if rsi_router_enabled:
+            allowed_by_router, router_reason = is_strategy_allowed(
+                self.strategy_name,
+                side_hint,
+                rsi_zone_snapshot,
+                rsi_zone_router_cfg,
+            )
+            if not allowed_by_router:
+                router_reason_code = str(router_reason or "rsi_router.zone_mismatch")
+                logger.info(
+                    "[MeanReversion] RSI router veto %s: reason=%s zone=%s",
+                    symbol,
+                    router_reason_code,
+                    (rsi_zone_snapshot or {}).get("zone") if isinstance(rsi_zone_snapshot, dict) else None,
+                )
+                eval_out = _emit_recheck_eval(
+                    action="HOLD",
+                    gate_reasons=[router_reason_code],
+                    rearm_recommended=False,
+                    rearm_reason="rsi_router.deferral_cancelled",
+                )
+                if is_recheck:
+                    decision_meta = {
+                        "action": "HOLD",
+                        "rearm_fast_watch": False,
+                        "rearm_reason": "rsi_router.deferral_cancelled",
+                        "reason_code": router_reason_code,
+                        "rsi_zone_snapshot": dict(rsi_zone_snapshot) if isinstance(rsi_zone_snapshot, dict) else None,
+                    }
+                    if isinstance(eval_out, dict):
+                        decision_meta.setdefault("mr_recheck_eval", eval_out)
+                    return {
+                        "event_type": "strategy_recheck_decision",
+                        "decision_meta": decision_meta,
+                    }
+                return None
 
         df_vwap = None
         df_sig = None
@@ -2684,6 +2730,30 @@ class VWAPMeanReversion(BaseStrategy):
                         )
                         return None
                     self._last_soft_deferral_anchor_by_key[rate_key] = setup_anchor_ts_ms
+
+                    soft_router_cfg = (
+                        rsi_zone_router_cfg.get("soft_deferral", {})
+                        if isinstance(rsi_zone_router_cfg.get("soft_deferral"), dict)
+                        else {}
+                    )
+                    cancel_on_zone_mismatch = bool(soft_router_cfg.get("cancel_on_zone_mismatch", True))
+                    if rsi_router_enabled and cancel_on_zone_mismatch:
+                        allowed_for_deferral, deferral_reason = is_strategy_allowed(
+                            self.strategy_name,
+                            side,
+                            rsi_zone_snapshot,
+                            rsi_zone_router_cfg,
+                        )
+                        if not allowed_for_deferral:
+                            logger.info(
+                                "[MeanReversion] Soft deferral cancelled by RSI router %s: reason=%s zone=%s",
+                                symbol,
+                                str(deferral_reason or "rsi_router.deferral_cancelled"),
+                                (rsi_zone_snapshot or {}).get("zone")
+                                if isinstance(rsi_zone_snapshot, dict)
+                                else None,
+                            )
+                            return None
 
                     reason_code = "strategy.mean_reversion.near_miss"
                     trigger_price = lower if choose_lower else upper

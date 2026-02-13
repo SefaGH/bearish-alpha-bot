@@ -510,6 +510,193 @@ class SmartOrderManager:
         except Exception:
             return int(default)
 
+    def _extract_signal_atr_bps(self, *, signal: Dict[str, Any], ref_px: Optional[float]) -> Optional[float]:
+        meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+        vol_tel = meta.get("vol_telemetry") if isinstance(meta.get("vol_telemetry"), dict) else {}
+        volatility = signal.get("volatility") if isinstance(signal.get("volatility"), dict) else {}
+
+        for candidate in (
+            vol_tel.get("atr_bps"),
+            volatility.get("vol_atr_bps"),
+            volatility.get("atr_bps"),
+            signal.get("atr_bps"),
+        ):
+            out = self._safe_float(candidate)
+            if out is not None and out >= 0:
+                return float(out)
+
+        atr_abs = self._safe_float(signal.get("atr"))
+        if atr_abs is not None and atr_abs > 0 and ref_px is not None and ref_px > 0:
+            return float((float(atr_abs) / float(ref_px)) * 10000.0)
+        return None
+
+    def _extract_tick_spread_bps(self, *, tick: Dict[str, Any], signal: Dict[str, Any]) -> Optional[float]:
+        bid = self._safe_float((tick or {}).get("bid"))
+        ask = self._safe_float((tick or {}).get("ask"))
+        if bid is not None and ask is not None and bid > 0 and ask >= bid:
+            mid = (bid + ask) / 2.0
+            if mid > 0:
+                return float(((ask - bid) / mid) * 10000.0)
+
+        meta = signal.get("meta") if isinstance(signal.get("meta"), dict) else {}
+        spread_meta = self._safe_float(meta.get("spread_bps"))
+        if spread_meta is not None and spread_meta >= 0:
+            return float(spread_meta)
+        return None
+
+    def _collect_fallback_hard_chase_cfg(
+        self,
+        *,
+        order_request: Dict[str, Any],
+        execution_params: Dict[str, Any],
+        legacy_gate_bps: Optional[float],
+    ) -> Dict[str, Any]:
+        cfg: Dict[str, Any] = {}
+
+        exec_block = execution_params.get("fallback_hard_chase") if isinstance(execution_params, dict) else None
+        if isinstance(exec_block, dict):
+            cfg.update(exec_block)
+
+        if isinstance(execution_params, dict):
+            for k in (
+                "fallback_hard_chase_enabled",
+                "fallback_hard_chase_floor_bps",
+                "fallback_hard_chase_min_bps",
+                "fallback_hard_chase_max_bps",
+                "fallback_hard_chase_atr_k",
+                "fallback_hard_chase_spread_m",
+            ):
+                if execution_params.get(k) is not None:
+                    cfg[k] = execution_params.get(k)
+
+        internal = order_request.get("_internal") if isinstance(order_request.get("_internal"), dict) else {}
+        internal_hard = (
+            internal.get("fallback_hard_chase")
+            if isinstance(internal.get("fallback_hard_chase"), dict)
+            else None
+        )
+        if isinstance(internal_hard, dict):
+            cfg.update(internal_hard)
+
+        enabled = _coerce_bool(cfg.get("enabled"))
+        if enabled is None:
+            enabled = _coerce_bool(cfg.get("fallback_hard_chase_enabled"))
+        if enabled is None:
+            enabled = True
+
+        default_floor_bps = 25.0
+        floor_bps = self._safe_float(cfg.get("floor_bps", cfg.get("fallback_hard_chase_floor_bps")))
+        if floor_bps is None:
+            floor_bps = float(legacy_gate_bps) if legacy_gate_bps is not None else default_floor_bps
+            floor_bps = max(float(floor_bps), default_floor_bps)
+
+        min_bps = self._safe_float(cfg.get("min_bps", cfg.get("fallback_hard_chase_min_bps")))
+        if min_bps is None:
+            min_bps = 20.0
+
+        max_bps = self._safe_float(cfg.get("max_bps", cfg.get("fallback_hard_chase_max_bps")))
+        if max_bps is None:
+            max_bps = 60.0
+
+        atr_k = self._safe_float(cfg.get("atr_k", cfg.get("fallback_hard_chase_atr_k")))
+        if atr_k is None:
+            atr_k = 1.5
+
+        spread_m = self._safe_float(cfg.get("spread_m", cfg.get("fallback_hard_chase_spread_m")))
+        if spread_m is None:
+            spread_m = 2.0
+
+        min_bps = max(float(min_bps), 0.0)
+        max_bps = max(float(max_bps), float(min_bps))
+        floor_bps = max(float(floor_bps), 0.0)
+        atr_k = max(float(atr_k), 0.0)
+        spread_m = max(float(spread_m), 0.0)
+
+        return {
+            "enabled": bool(enabled),
+            "floor_bps": float(floor_bps),
+            "min_bps": float(min_bps),
+            "max_bps": float(max_bps),
+            "atr_k": float(atr_k),
+            "spread_m": float(spread_m),
+            "legacy_gate_bps": float(legacy_gate_bps) if legacy_gate_bps is not None else None,
+        }
+
+    def _evaluate_fallback_hard_chase(
+        self,
+        *,
+        normalized_side: str,
+        current_px: float,
+        ref_px: Optional[float],
+        tick: Dict[str, Any],
+        signal: Dict[str, Any],
+        cfg: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        enabled = bool(cfg.get("enabled", True))
+        if not enabled:
+            return {"enabled": False, "allow": True, "reason": "disabled"}
+
+        floor_bps = float(cfg.get("floor_bps", 25.0) or 25.0)
+        min_bps = float(cfg.get("min_bps", 20.0) or 20.0)
+        max_bps = float(cfg.get("max_bps", 60.0) or 60.0)
+        atr_k = float(cfg.get("atr_k", 1.5) or 1.5)
+        spread_m = float(cfg.get("spread_m", 2.0) or 2.0)
+
+        chase_bps = None
+        if current_px > 0 and ref_px is not None and ref_px > 0:
+            if normalized_side == "buy":
+                chase_bps = max((float(current_px) - float(ref_px)) / float(ref_px) * 10000.0, 0.0)
+            elif normalized_side == "sell":
+                chase_bps = max((float(ref_px) - float(current_px)) / float(ref_px) * 10000.0, 0.0)
+
+        atr_bps = self._extract_signal_atr_bps(signal=(signal if isinstance(signal, dict) else {}), ref_px=ref_px)
+        spread_bps = self._extract_tick_spread_bps(
+            tick=(tick if isinstance(tick, dict) else {}),
+            signal=(signal if isinstance(signal, dict) else {}),
+        )
+
+        dynamic_component = (float(atr_bps or 0.0) * atr_k) + (float(spread_bps or 0.0) * spread_m)
+        kill_bps_raw = max(float(floor_bps), float(dynamic_component))
+        kill_bps = min(max(float(kill_bps_raw), float(min_bps)), float(max_bps))
+
+        if chase_bps is None:
+            return {
+                "enabled": True,
+                "allow": True,
+                "reason": "fallback_hard_chase_no_context",
+                "chase_bps": None,
+                "kill_bps": float(kill_bps),
+                "atr_bps": float(atr_bps) if atr_bps is not None else None,
+                "spread_bps": float(spread_bps) if spread_bps is not None else None,
+                "dynamic_component_bps": float(dynamic_component),
+                "config": {
+                    "floor_bps": float(floor_bps),
+                    "min_bps": float(min_bps),
+                    "max_bps": float(max_bps),
+                    "atr_k": float(atr_k),
+                    "spread_m": float(spread_m),
+                },
+            }
+
+        allow = bool(float(chase_bps) <= float(kill_bps))
+        return {
+            "enabled": True,
+            "allow": bool(allow),
+            "reason": "fallback_hard_chase_pass" if allow else "fallback_hard_chase_kill",
+            "chase_bps": float(chase_bps),
+            "kill_bps": float(kill_bps),
+            "atr_bps": float(atr_bps) if atr_bps is not None else None,
+            "spread_bps": float(spread_bps) if spread_bps is not None else None,
+            "dynamic_component_bps": float(dynamic_component),
+            "config": {
+                "floor_bps": float(floor_bps),
+                "min_bps": float(min_bps),
+                "max_bps": float(max_bps),
+                "atr_k": float(atr_k),
+                "spread_m": float(spread_m),
+            },
+        }
+
     def _collect_fallback_soft_gate_cfg(self, *, order_request: Dict[str, Any], execution_params: Dict[str, Any]) -> Dict[str, Any]:
         cfg: Dict[str, Any] = {}
 
@@ -524,6 +711,7 @@ class SmartOrderManager:
                 "fallback_soft_gate_rr_min",
                 "fallback_soft_gate_max_adverse_bps",
                 "fallback_soft_gate_max_spread_bps",
+                "fallback_soft_gate_max_peak_distance_bps",
                 "fallback_soft_gate_fail_closed_on_insufficient_context",
             ):
                 if execution_params.get(k) is not None:
@@ -540,8 +728,8 @@ class SmartOrderManager:
         if enabled is None:
             enabled = False
 
-        min_passes = self._safe_int(cfg.get("min_passes", cfg.get("fallback_soft_gate_min_passes", 2)), 2)
-        min_passes = max(1, min(min_passes, 3))
+        min_passes = self._safe_int(cfg.get("min_passes", cfg.get("fallback_soft_gate_min_passes", 3)), 3)
+        min_passes = max(1, min(min_passes, 4))
 
         rr_min = self._safe_float(cfg.get("rr_min", cfg.get("fallback_soft_gate_rr_min")))
         if rr_min is None:
@@ -556,6 +744,12 @@ class SmartOrderManager:
         max_spread_bps = self._safe_float(cfg.get("max_spread_bps", cfg.get("fallback_soft_gate_max_spread_bps")))
         if max_spread_bps is None:
             max_spread_bps = 8.0
+
+        max_peak_distance_bps = self._safe_float(
+            cfg.get("max_peak_distance_bps", cfg.get("fallback_soft_gate_max_peak_distance_bps"))
+        )
+        if max_peak_distance_bps is None:
+            max_peak_distance_bps = 20.0
 
         fail_closed = _coerce_bool(
             cfg.get(
@@ -572,6 +766,7 @@ class SmartOrderManager:
             "rr_min": float(rr_min),
             "max_adverse_bps": float(max_adverse_bps),
             "max_spread_bps": float(max_spread_bps),
+            "max_peak_distance_bps": float(max_peak_distance_bps),
             "fail_closed_on_insufficient_context": bool(fail_closed),
         }
 
@@ -583,16 +778,19 @@ class SmartOrderManager:
         current_px: float,
         ref_px: Optional[float],
         tick: Dict[str, Any],
+        wait_window_max_px: Optional[float],
+        wait_window_min_px: Optional[float],
         cfg: Dict[str, Any],
     ) -> Dict[str, Any]:
         enabled = bool(cfg.get("enabled", False))
         if not enabled:
             return {"enabled": False, "allow": True, "reason": "disabled"}
 
-        min_passes = int(cfg.get("min_passes", 2) or 2)
+        min_passes = int(cfg.get("min_passes", 3) or 3)
         rr_min = float(cfg.get("rr_min", 1.2) or 1.2)
         max_adverse_bps = float(cfg.get("max_adverse_bps", 15.0) or 15.0)
         max_spread_bps = float(cfg.get("max_spread_bps", 8.0) or 8.0)
+        max_peak_distance_bps = float(cfg.get("max_peak_distance_bps", 20.0) or 20.0)
         fail_closed = bool(cfg.get("fail_closed_on_insufficient_context", False))
 
         passes: List[str] = []
@@ -671,7 +869,31 @@ class SmartOrderManager:
             gates["execution_quality"] = {"pass": False, "na": True}
             na.append("execution_quality")
 
-        applicable = 3 - len(na)
+        # Gate 4: peak_distance (distance from wait-window extreme to current at timeout)
+        peak_distance_bps = None
+        if normalized_side == "sell":
+            if wait_window_max_px is not None and wait_window_max_px > 0 and current_px > 0:
+                peak_distance_bps = max(((float(wait_window_max_px) - float(current_px)) / float(wait_window_max_px)) * 10000.0, 0.0)
+        elif normalized_side == "buy":
+            if wait_window_min_px is not None and wait_window_min_px > 0 and current_px > 0:
+                peak_distance_bps = max(((float(current_px) - float(wait_window_min_px)) / float(wait_window_min_px)) * 10000.0, 0.0)
+
+        if peak_distance_bps is None:
+            gates["peak_distance"] = {"pass": False, "na": True}
+            na.append("peak_distance")
+        else:
+            ok = bool(float(peak_distance_bps) <= float(max_peak_distance_bps))
+            gates["peak_distance"] = {
+                "pass": ok,
+                "na": False,
+                "peak_distance_bps": float(peak_distance_bps),
+                "max_peak_distance_bps": float(max_peak_distance_bps),
+                "wait_window_max_px": float(wait_window_max_px) if wait_window_max_px is not None else None,
+                "wait_window_min_px": float(wait_window_min_px) if wait_window_min_px is not None else None,
+            }
+            (passes if ok else fails).append("peak_distance")
+
+        applicable = 4 - len(na)
         if applicable < min_passes:
             allow = not fail_closed
             reason = (
@@ -698,6 +920,7 @@ class SmartOrderManager:
                 "rr_min": float(rr_min),
                 "max_adverse_bps": float(max_adverse_bps),
                 "max_spread_bps": float(max_spread_bps),
+                "max_peak_distance_bps": float(max_peak_distance_bps),
                 "fail_closed_on_insufficient_context": bool(fail_closed),
             },
         }
@@ -1326,6 +1549,8 @@ class SmartOrderManager:
 
                 start_ts = time.time()
                 last_seen_order = exchange_order
+                wait_window_max_px: Optional[float] = None
+                wait_window_min_px: Optional[float] = None
 
                 async def _cancel_with_stop_abort_verification() -> Dict[str, Any]:
                     try:
@@ -1442,84 +1667,93 @@ class SmartOrderManager:
 
                 while timeout_s > 0 and (time.time() - start_ts) < timeout_s:
                     # 1) stop-hit-before-entry check
-                    if stop_price and stop_price > 0:
-                        try:
-                            tick = client.ticker(symbol)
-                            last_px = float((tick or {}).get("last") or 0.0)
-                        except Exception:
-                            last_px = 0.0
+                    try:
+                        tick = client.ticker(symbol)
+                        last_px = float((tick or {}).get("last") or 0.0)
+                    except Exception:
+                        last_px = 0.0
 
-                        if last_px > 0:
-                            stop_hit_before_entry = (
-                                (normalized_side == "buy" and last_px <= stop_price)
-                                or (normalized_side == "sell" and last_px >= stop_price)
-                            )
-                            if stop_hit_before_entry:
-                                stop_abort_diag = await _cancel_with_stop_abort_verification()
-                                stop_abort_state = str(stop_abort_diag.get("state") or "unknown")
-                                stop_abort_order = stop_abort_diag.get("order") or {}
-                                stop_abort_filled_qty = float(stop_abort_diag.get("filled_qty") or 0.0)
+                    if last_px > 0:
+                        if wait_window_max_px is None:
+                            wait_window_max_px = float(last_px)
+                        else:
+                            wait_window_max_px = max(float(wait_window_max_px), float(last_px))
+                        if wait_window_min_px is None:
+                            wait_window_min_px = float(last_px)
+                        else:
+                            wait_window_min_px = min(float(wait_window_min_px), float(last_px))
 
-                                if stop_abort_state == "filled":
-                                    avg_fill_price = stop_abort_order.get("average") or stop_abort_order.get("price") or limit_price
-                                    filled_amount = stop_abort_order.get("filled") or stop_abort_filled_qty or stop_abort_order.get("amount") or amount
-                                    try:
-                                        avg_fill_price = float(avg_fill_price or 0)
-                                    except Exception:
-                                        avg_fill_price = float(limit_price)
-                                    try:
-                                        filled_amount = float(filled_amount or 0)
-                                    except Exception:
-                                        filled_amount = float(amount or 0)
+                    if stop_price and stop_price > 0 and last_px > 0:
+                        stop_hit_before_entry = (
+                            (normalized_side == "buy" and last_px <= stop_price)
+                            or (normalized_side == "sell" and last_px >= stop_price)
+                        )
+                        if stop_hit_before_entry:
+                            stop_abort_diag = await _cancel_with_stop_abort_verification()
+                            stop_abort_state = str(stop_abort_diag.get("state") or "unknown")
+                            stop_abort_order = stop_abort_diag.get("order") or {}
+                            stop_abort_filled_qty = float(stop_abort_diag.get("filled_qty") or 0.0)
 
-                                    slippage = 0.0
-                                    if reference_price > 0 and avg_fill_price > 0:
-                                        slippage = abs(avg_fill_price - reference_price) / reference_price
-                                    self.execution_stats['total_slippage'] += slippage
+                            if stop_abort_state == "filled":
+                                avg_fill_price = stop_abort_order.get("average") or stop_abort_order.get("price") or limit_price
+                                filled_amount = stop_abort_order.get("filled") or stop_abort_filled_qty or stop_abort_order.get("amount") or amount
+                                try:
+                                    avg_fill_price = float(avg_fill_price or 0)
+                                except Exception:
+                                    avg_fill_price = float(limit_price)
+                                try:
+                                    filled_amount = float(filled_amount or 0)
+                                except Exception:
+                                    filled_amount = float(amount or 0)
 
-                                    order = {
-                                        'order_id': exchange_order_id,
-                                        'symbol': symbol,
-                                        'side': normalized_side,
-                                        'amount': amount,
-                                        'type': 'limit',
-                                        'limit_price': limit_price,
-                                        'exchange': exchange,
-                                        'expected_price': reference_price if reference_price > 0 else limit_price,
-                                        'status': (stop_abort_order.get("status") or OrderStatus.FILLED.value),
-                                        'created_at': datetime.now(timezone.utc),
-                                        'filled_amount': filled_amount,
-                                        'avg_fill_price': avg_fill_price,
-                                        'filled_at': datetime.now(timezone.utc),
-                                        'slippage': slippage,
-                                        'ccxt_params': ccxt_params,
-                                        'exchange_order': stop_abort_order if isinstance(stop_abort_order, dict) else {},
-                                    }
-                                    self.active_orders[exchange_order_id] = order
-                                    return {
-                                        'success': True,
-                                        'reason': 'FILLED_DURING_STOP_ABORT',
-                                        'order_id': exchange_order_id,
-                                        'filled_amount': filled_amount,
-                                        'avg_price': avg_fill_price,
-                                        'slippage': slippage,
-                                        'order': order,
-                                    }
+                                slippage = 0.0
+                                if reference_price > 0 and avg_fill_price > 0:
+                                    slippage = abs(avg_fill_price - reference_price) / reference_price
+                                self.execution_stats['total_slippage'] += slippage
 
-                                if stop_abort_state == "canceled":
-                                    return {
-                                        'success': False,
-                                        'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY',
-                                        'order_id': exchange_order_id,
-                                        'stop_abort_cancel_state': stop_abort_state,
-                                    }
+                                order = {
+                                    'order_id': exchange_order_id,
+                                    'symbol': symbol,
+                                    'side': normalized_side,
+                                    'amount': amount,
+                                    'type': 'limit',
+                                    'limit_price': limit_price,
+                                    'exchange': exchange,
+                                    'expected_price': reference_price if reference_price > 0 else limit_price,
+                                    'status': (stop_abort_order.get("status") or OrderStatus.FILLED.value),
+                                    'created_at': datetime.now(timezone.utc),
+                                    'filled_amount': filled_amount,
+                                    'avg_fill_price': avg_fill_price,
+                                    'filled_at': datetime.now(timezone.utc),
+                                    'slippage': slippage,
+                                    'ccxt_params': ccxt_params,
+                                    'exchange_order': stop_abort_order if isinstance(stop_abort_order, dict) else {},
+                                }
+                                self.active_orders[exchange_order_id] = order
+                                return {
+                                    'success': True,
+                                    'reason': 'FILLED_DURING_STOP_ABORT',
+                                    'order_id': exchange_order_id,
+                                    'filled_amount': filled_amount,
+                                    'avg_price': avg_fill_price,
+                                    'slippage': slippage,
+                                    'order': order,
+                                }
 
+                            if stop_abort_state == "canceled":
                                 return {
                                     'success': False,
-                                    'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY_CANCEL_UNCONFIRMED',
+                                    'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY',
                                     'order_id': exchange_order_id,
                                     'stop_abort_cancel_state': stop_abort_state,
                                 }
+
+                            return {
+                                'success': False,
+                                'reason': 'ABORT:STOP_HIT_BEFORE_ENTRY_CANCEL_UNCONFIRMED',
+                                'order_id': exchange_order_id,
+                                'stop_abort_cancel_state': stop_abort_state,
+                            }
 
                     # 2) order fill check
                     fetched = None
@@ -1583,6 +1817,15 @@ class SmartOrderManager:
                     current_px = float((tick or {}).get("last") or 0.0)
                 except Exception:
                     current_px = 0.0
+                if current_px > 0:
+                    if wait_window_max_px is None:
+                        wait_window_max_px = float(current_px)
+                    else:
+                        wait_window_max_px = max(float(wait_window_max_px), float(current_px))
+                    if wait_window_min_px is None:
+                        wait_window_min_px = float(current_px)
+                    else:
+                        wait_window_min_px = min(float(wait_window_min_px), float(current_px))
 
                 ref_px = None
                 for k in ("entry_raw", "entry", "execution_price"):
@@ -1593,20 +1836,17 @@ class SmartOrderManager:
                             ref_px = None
                         break
 
-                max_chase_bps = execution_params.get("max_chase_bps")
-                if max_chase_bps is None:
-                    max_chase_bps = execution_params.get("max_chase_bps_long") if normalized_side == "buy" else execution_params.get("max_chase_bps_short")
+                legacy_gate_bps = execution_params.get("max_chase_bps")
+                if legacy_gate_bps is None:
+                    legacy_gate_bps = (
+                        execution_params.get("max_chase_bps_long")
+                        if normalized_side == "buy"
+                        else execution_params.get("max_chase_bps_short")
+                    )
                 try:
-                    max_chase_bps = None if max_chase_bps is None else float(max_chase_bps)
+                    legacy_gate_bps = None if legacy_gate_bps is None else float(legacy_gate_bps)
                 except Exception:
-                    max_chase_bps = None
-
-                deviation_bps = None
-                if current_px > 0 and ref_px and ref_px > 0:
-                    if normalized_side == "buy":
-                        deviation_bps = (current_px / ref_px - 1.0) * 10000.0
-                    else:
-                        deviation_bps = (1.0 - current_px / ref_px) * 10000.0
+                    legacy_gate_bps = None
 
                 lock_key = self._fallback_lock_key(
                     exchange=exchange,
@@ -1683,17 +1923,6 @@ class SmartOrderManager:
                                 post_cancel_filled_qty = max(float(post_cancel.get("filled") or 0.0), 0.0)
                             except Exception:
                                 post_cancel_filled_qty = 0.0
-
-                # Chase gate: negative deviation means price improved vs reference => always allow.
-                if deviation_bps is not None and deviation_bps <= 0:
-                    max_chase_bps = max_chase_bps if max_chase_bps is not None else 0.0
-
-                if max_chase_bps is not None and deviation_bps is not None and deviation_bps > max_chase_bps:
-                    return {
-                        'success': False,
-                        'reason': f"ABORT:CHASE_GATE:{deviation_bps:.2f}>{max_chase_bps:.2f}",
-                        'order_id': exchange_order_id,
-                    }
 
                 # Market fallback (timeout): explicit flags first, then optional risk-regime overrides.
                 fallback_enabled = True
@@ -1884,6 +2113,45 @@ class SmartOrderManager:
                         'verification_sources': verification_sources,
                     }
 
+                hard_chase_cfg = self._collect_fallback_hard_chase_cfg(
+                    order_request=order_request,
+                    execution_params=(execution_params if isinstance(execution_params, dict) else {}),
+                    legacy_gate_bps=legacy_gate_bps,
+                )
+                hard_chase_eval = self._evaluate_fallback_hard_chase(
+                    normalized_side=normalized_side,
+                    current_px=float(current_px or 0.0),
+                    ref_px=ref_px,
+                    tick=(tick if isinstance(tick, dict) else {}),
+                    signal=(signal if isinstance(signal, dict) else {}),
+                    cfg=hard_chase_cfg,
+                )
+                if bool(hard_chase_eval.get("enabled")) and not bool(hard_chase_eval.get("allow", True)):
+                    chase_bps = self._safe_float(hard_chase_eval.get("chase_bps"))
+                    kill_bps = self._safe_float(hard_chase_eval.get("kill_bps"))
+                    logger.info(
+                        "[ORDER-FALLBACK] hard-chase killed symbol=%s side=%s chase_bps=%s kill_bps=%s cfg=%s",
+                        symbol,
+                        side,
+                        f"{chase_bps:.2f}" if chase_bps is not None else "n/a",
+                        f"{kill_bps:.2f}" if kill_bps is not None else "n/a",
+                        hard_chase_eval.get("config"),
+                    )
+                    return {
+                        'success': False,
+                        'reason': (
+                            f"ABORT:HARD_CHASE_KILL:{chase_bps:.2f}>{kill_bps:.2f}"
+                            if chase_bps is not None and kill_bps is not None
+                            else "ABORT:HARD_CHASE_KILL"
+                        ),
+                        'order_id': exchange_order_id,
+                        'fallback_reason': 'limit_timeout_market_fallback_hard_chase_killed',
+                        'requested_order_type': 'limit',
+                        'effective_order_type': 'limit',
+                        'verification_sources': verification_sources,
+                        'fallback_hard_chase': hard_chase_eval,
+                    }
+
                 soft_gate_cfg = self._collect_fallback_soft_gate_cfg(
                     order_request=order_request,
                     execution_params=(execution_params if isinstance(execution_params, dict) else {}),
@@ -1894,6 +2162,8 @@ class SmartOrderManager:
                     current_px=float(current_px or 0.0),
                     ref_px=ref_px,
                     tick=(tick if isinstance(tick, dict) else {}),
+                    wait_window_max_px=wait_window_max_px,
+                    wait_window_min_px=wait_window_min_px,
                     cfg=soft_gate_cfg,
                 )
                 if bool(soft_gate_eval.get("enabled")) and not bool(soft_gate_eval.get("allow", True)):
@@ -1918,13 +2188,15 @@ class SmartOrderManager:
                         'fallback_soft_gate': soft_gate_eval,
                     }
 
+                hard_chase_bps = self._safe_float(hard_chase_eval.get("chase_bps")) if isinstance(hard_chase_eval, dict) else None
+                hard_chase_kill_bps = self._safe_float(hard_chase_eval.get("kill_bps")) if isinstance(hard_chase_eval, dict) else None
                 # Place market order as fallback only for residual amount.
                 logger.info(
-                    "[ORDER-FALLBACK] limit_timeout_market_fallback symbol=%s side=%s deviation_bps=%s max_chase_bps=%s residual_qty=%.8f observed_filled=%.8f",
+                    "[ORDER-FALLBACK] limit_timeout_market_fallback symbol=%s side=%s chase_bps=%s hard_kill_bps=%s residual_qty=%.8f observed_filled=%.8f",
                     symbol,
                     side,
-                    f"{deviation_bps:.2f}" if deviation_bps is not None else "n/a",
-                    f"{max_chase_bps:.2f}" if max_chase_bps is not None else "n/a",
+                    f"{hard_chase_bps:.2f}" if hard_chase_bps is not None else "n/a",
+                    f"{hard_chase_kill_bps:.2f}" if hard_chase_kill_bps is not None else "n/a",
                     float(remaining_qty),
                     float(observed_filled_qty),
                 )
@@ -1940,10 +2212,14 @@ class SmartOrderManager:
                     fallback_result.setdefault("baseline_position_qty", baseline_position_qty)
                     fallback_result.setdefault("current_position_qty", current_position_qty)
                     fallback_result.setdefault("verification_sources", verification_sources)
-                    if deviation_bps is not None:
-                        fallback_result.setdefault("deviation_bps", float(deviation_bps))
-                    if max_chase_bps is not None:
-                        fallback_result.setdefault("max_chase_bps", float(max_chase_bps))
+                    if hard_chase_bps is not None:
+                        fallback_result.setdefault("deviation_bps", float(hard_chase_bps))
+                        fallback_result.setdefault("chase_bps", float(hard_chase_bps))
+                    if hard_chase_kill_bps is not None:
+                        fallback_result.setdefault("max_chase_bps", float(hard_chase_kill_bps))
+                        fallback_result.setdefault("hard_chase_kill_bps", float(hard_chase_kill_bps))
+                    if bool(hard_chase_eval.get("enabled")):
+                        fallback_result.setdefault("fallback_hard_chase", hard_chase_eval)
                     if bool(soft_gate_eval.get("enabled")):
                         fallback_result.setdefault("fallback_soft_gate", soft_gate_eval)
                 return fallback_result
