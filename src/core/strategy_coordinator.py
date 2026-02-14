@@ -33,6 +33,7 @@ from src.safety.regime_filter import RegimeFilter
 from src.core.transition_policy import PositionTransitionPolicy
 from src.core.interfaces import PositionSizingProtocol
 from src.utils.volume_utils import get_bucket_rank
+from core.directional_bias import compute_directional_bias_adjustment
 from core.logger import get_current_run_id
 from src.core.signal_intents import (
     INTENT_ENTRY,
@@ -6023,6 +6024,44 @@ class StrategyCoordinator:
 
     def _compute_signal_quality(self, signal: Dict[str, Any]) -> Dict[str, Any]:
         """Compute and attach quality metrics to a signal (single source of truth)."""
+        cfg = self.config if isinstance(self.config, dict) else {}
+        directional_bias_cfg = (cfg.get("signals") or {}).get("directional_bias") or {}
+
+        def _apply_directional_bias_adjustment(value: float, quality_result: Dict[str, Any]) -> float:
+            try:
+                base_value = float(value)
+            except Exception:
+                base_value = 0.0
+            base_value = max(0.0, min(1.0, base_value))
+
+            adj = compute_directional_bias_adjustment(signal, directional_bias_cfg if isinstance(directional_bias_cfg, dict) else {})
+            try:
+                delta = float(adj.get("delta", 0.0) or 0.0)
+            except Exception:
+                delta = 0.0
+
+            applied = bool(adj.get("applied", False) and abs(delta) > 1e-12)
+            adjusted_value = max(0.0, min(1.0, base_value + delta)) if applied else base_value
+
+            quality_result["directional_bias"] = {
+                "enabled": bool(adj.get("enabled", False)),
+                "applied": applied,
+                "delta": round(delta, 4),
+                "would_delta": round(float(adj.get("would_delta", 0.0) or 0.0), 4),
+                "zone": adj.get("zone"),
+                "bias_score": round(float(adj.get("bias_score", 0.0) or 0.0), 4),
+                "confidence": round(float(adj.get("confidence", 0.0) or 0.0), 4),
+                "reason": adj.get("reason"),
+            }
+            if applied:
+                quality_result.setdefault("components", {})
+                quality_result["components"]["directional_bias_component"] = round(
+                    float(adj.get("bias_score", 0.0) or 0.0), 4
+                )
+                if isinstance(quality_result.get("reason"), list):
+                    quality_result["reason"].append(str(adj.get("reason") or "directional_bias.adjusted"))
+            return adjusted_value
+
         # Extreme bypass profile (skip ML, rely on non-ML components)
         if signal.get("extreme_bypass"):
             cfg = self.config.get("signals", {}).get("signal_scoring", {}) if isinstance(self.config, dict) else {}
@@ -6065,6 +6104,8 @@ class StrategyCoordinator:
                 },
                 "reason": [],
             }
+            quality_value = _apply_directional_bias_adjustment(quality_value, quality_result)
+            quality_result["value"] = round(quality_value, 4)
             signal["quality_score"] = quality_result["value"]
             signal["quality_breakdown"] = quality_result
             return quality_result
@@ -6167,6 +6208,8 @@ class StrategyCoordinator:
             "rr_adjustment": round(rr_adj, 4),
             "reason": [],
         }
+        quality_value = _apply_directional_bias_adjustment(quality_value, quality_result)
+        quality_result["value"] = round(quality_value, 4)
         signal["quality_score"] = quality_result["value"]
         signal["quality_breakdown"] = quality_result
         return quality_result

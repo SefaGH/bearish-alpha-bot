@@ -84,7 +84,16 @@ from .bingx_vst_balance import BingxVstBalanceError, create_vst_balance_client_f
 from .live_trading_engine import LiveTradingEngine
 from .market_data_pipeline import MarketDataPipeline
 from .indicator_validator import IndicatorValidator
-from core.rsi_zone_router import build_rsi_zone_snapshot, is_strategy_allowed, snapshot_to_dict
+from core.rsi_zone_router import (
+    build_rsi_zone_snapshot,
+    is_strategy_allowed as is_rsi_strategy_allowed,
+    snapshot_to_dict as rsi_snapshot_to_dict,
+)
+from core.level_zone_router import (
+    build_level_zone_snapshot,
+    is_strategy_allowed as is_level_strategy_allowed,
+    snapshot_to_dict as level_snapshot_to_dict,
+)
 
 
 # Strategy imports - DÜZELTILDI
@@ -208,10 +217,210 @@ class ProductionCoordinator:
         except Exception:
             return None
 
+    @staticmethod
+    def _attach_router_snapshots_to_signal(
+        signal: Any,
+        *,
+        rsi_zone_snapshot: Optional[Dict[str, Any]] = None,
+        level_zone_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        if not isinstance(signal, dict):
+            return signal
+        meta = signal.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+            signal["meta"] = meta
+        if isinstance(rsi_zone_snapshot, dict):
+            signal.setdefault("rsi_zone_snapshot", dict(rsi_zone_snapshot))
+            meta.setdefault("rsi_zone_snapshot", dict(rsi_zone_snapshot))
+        if isinstance(level_zone_snapshot, dict):
+            signal.setdefault("level_zone_snapshot", dict(level_zone_snapshot))
+            meta.setdefault("level_zone_snapshot", dict(level_zone_snapshot))
+        return signal
+
+    @staticmethod
+    def _normalize_timeframe_list(value: Any, *, default: Optional[List[str]] = None) -> List[str]:
+        defaults = list(default or ["15m", "1h"])
+        if isinstance(value, str):
+            out = [part.strip() for part in value.split(",") if part.strip()]
+            return out if out else defaults
+        if isinstance(value, (list, tuple)):
+            out = [str(item).strip() for item in value if str(item).strip()]
+            return out if out else defaults
+        return defaults
+
+    @staticmethod
+    def _normalize_strategy_token(value: Any) -> str:
+        try:
+            return str(value or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _emit_level_router_decision(
+        self,
+        *,
+        scope: str,
+        symbol: Any,
+        strategy_name: Any,
+        side: Optional[str],
+        allowed: bool,
+        reason_code: Optional[str],
+        level_zone_snapshot: Optional[Dict[str, Any]],
+        level_router_cfg: Optional[Dict[str, Any]],
+        parent_pending_id: Optional[str] = None,
+        pending_id: Optional[str] = None,
+        refresh_policy: Optional[str] = None,
+    ) -> None:
+        """Emit structured telemetry for level-router decisions."""
+        snapshot = level_zone_snapshot if isinstance(level_zone_snapshot, dict) else {}
+        router_cfg = level_router_cfg if isinstance(level_router_cfg, dict) else {}
+        rollout_cfg = router_cfg.get("rollout", {}) if isinstance(router_cfg.get("rollout"), dict) else {}
+        out: Dict[str, Any] = {
+            "event": "level_router_decision",
+            "ts_ms": int(time.time() * 1000),
+            "run_id": get_current_run_id(),
+            "scope": str(scope or ""),
+            "symbol": str(symbol or ""),
+            "strategy": str(strategy_name or ""),
+            "side": str(side or "").lower() if side else None,
+            "allowed": bool(allowed),
+            "reason_code": str(reason_code or ""),
+            "zone": str(snapshot.get("zone") or ""),
+            "primary_timeframe": str(snapshot.get("primary_timeframe") or ""),
+            "router_mode": str(snapshot.get("mode") or ""),
+            "rollout_mode": str(rollout_cfg.get("mode") or ""),
+        }
+        if parent_pending_id:
+            out["parent_pending_id"] = str(parent_pending_id)
+        if pending_id:
+            out["pending_id"] = str(pending_id)
+        if refresh_policy:
+            out["refresh_policy"] = str(refresh_policy)
+        try:
+            logger.info("level_router_decision %s", json.dumps(out, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            logger.info("level_router_decision %s", out)
+
+    def _build_level_router_soft_deferral_event(
+        self,
+        *,
+        strategy_name: str,
+        strategy_instance: Any,
+        symbol: str,
+        reason_code: Optional[str],
+        level_zone_snapshot: Optional[Dict[str, Any]],
+        level_router_cfg: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        reason = str(reason_code or "").strip().lower()
+        if reason != "level_router.at_level":
+            return None
+
+        cfg = level_router_cfg if isinstance(level_router_cfg, dict) else {}
+        soft_cfg = cfg.get("soft_deferral", {}) if isinstance(cfg.get("soft_deferral"), dict) else {}
+        if not bool(soft_cfg.get("enabled", False)):
+            return None
+
+        normalized = self._normalize_strategy_token(getattr(strategy_instance, "strategy_name", "") or strategy_name)
+        ob_names = {"adaptive_ob", "oversold_bounce"}
+        str_names = {"adaptive_str", "short_the_rip", "adaptive_short_the_rip"}
+
+        side = None
+        if normalized in ob_names:
+            side = "buy"
+        elif normalized in str_names:
+            side = "sell"
+        if side is None:
+            return None
+
+        timeframe = None
+        for attr in ("signal_tf", "timeframe", "vwap_tf"):
+            raw = getattr(strategy_instance, attr, None)
+            if raw is None:
+                continue
+            tf = str(raw).strip()
+            if tf:
+                timeframe = tf
+                break
+        if not timeframe and isinstance(level_zone_snapshot, dict):
+            raw_tf = level_zone_snapshot.get("primary_timeframe")
+            if raw_tf is not None:
+                try:
+                    tf = str(raw_tf).strip()
+                except Exception:
+                    tf = ""
+                if tf:
+                    timeframe = tf
+        if not timeframe:
+            timeframe = "15m"
+
+        setup_anchor_ts_ms = int(time.time() * 1000)
+        if isinstance(level_zone_snapshot, dict):
+            try:
+                ts_candidate = int(level_zone_snapshot.get("ts_ms") or 0)
+                if ts_candidate > 0:
+                    setup_anchor_ts_ms = ts_candidate
+            except Exception:
+                pass
+
+        trigger_price = None
+        if isinstance(level_zone_snapshot, dict):
+            try:
+                px = float(level_zone_snapshot.get("price"))
+                if math.isfinite(px) and px > 0:
+                    trigger_price = px
+            except Exception:
+                trigger_price = None
+
+        zones_cfg = cfg.get("zones", {}) if isinstance(cfg.get("zones"), dict) else {}
+        near_level_bps = None
+        try:
+            near_raw = zones_cfg.get("near_level_bps")
+            if near_raw is not None:
+                near_val = float(near_raw)
+                if math.isfinite(near_val) and near_val > 0:
+                    near_level_bps = near_val
+        except Exception:
+            near_level_bps = None
+
+        condition_data: Dict[str, Any] = {"near": "level"}
+        if trigger_price is not None:
+            condition_data["trigger_price"] = float(trigger_price)
+        if near_level_bps is not None:
+            condition_data["eps_bps"] = float(near_level_bps)
+
+        mode = str(soft_cfg.get("mode", "fast_watch_then_recheck") or "fast_watch_then_recheck").strip().lower()
+        use_fast_watch = mode in {"fast_watch_then_recheck", "fast_watch", "fast_price_watch"}
+        refresh_policy = "FAST_PRICE_WATCH" if (use_fast_watch and trigger_price is not None) else "STRATEGY_RECHECK"
+
+        return {
+            "event_type": "soft_deferral_event",
+            "strategy": str(strategy_name),
+            "symbol": str(symbol),
+            "side": side,
+            "timeframe": str(timeframe),
+            "setup_anchor_ts_ms": int(setup_anchor_ts_ms),
+            "reason_code": "level_router.at_level",
+            "reason": "level_router.at_level",
+            "refresh_policy": refresh_policy,
+            "condition_data": condition_data,
+            "meta": {
+                "level_zone_snapshot": dict(level_zone_snapshot) if isinstance(level_zone_snapshot, dict) else {},
+                "pending_reason_code": "level_router.at_level",
+            },
+        }
+
     def _get_rsi_zone_router_cfg(self) -> Dict[str, Any]:
         cfg = self.config if isinstance(self.config, dict) else {}
         strategies_cfg = cfg.get("strategies", {}) if isinstance(cfg.get("strategies"), dict) else {}
         router_cfg = strategies_cfg.get("rsi_zone_router", {})
+        if router_cfg is not None and not isinstance(router_cfg, dict):
+            return {}
+        return dict(router_cfg) if isinstance(router_cfg, dict) else {}
+
+    def _get_level_zone_router_cfg(self) -> Dict[str, Any]:
+        cfg = self.config if isinstance(self.config, dict) else {}
+        strategies_cfg = cfg.get("strategies", {}) if isinstance(cfg.get("strategies"), dict) else {}
+        router_cfg = strategies_cfg.get("level_zone_router", {})
         if router_cfg is not None and not isinstance(router_cfg, dict):
             return {}
         return dict(router_cfg) if isinstance(router_cfg, dict) else {}
@@ -259,7 +468,32 @@ class ProductionCoordinator:
             str_strategy=str_strategy,
             router_cfg=router_cfg,
         )
-        return snapshot_to_dict(snapshot)
+        return rsi_snapshot_to_dict(snapshot)
+
+    def _build_symbol_level_zone_snapshot(
+        self,
+        *,
+        symbol: str,
+        price: Optional[float],
+        market_data: Dict[str, Any],
+        router_cfg: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(router_cfg, dict) or not bool(router_cfg.get("enabled", False)):
+            return None
+        source_cfg = router_cfg.get("source", {}) if isinstance(router_cfg.get("source"), dict) else {}
+        timeframes = self._normalize_timeframe_list(source_cfg.get("timeframes"), default=["15m", "1h"])
+        dfs_by_timeframe: Dict[str, Optional[pd.DataFrame]] = {}
+        for tf in timeframes:
+            candidate = market_data.get(tf) if isinstance(market_data, dict) else None
+            if isinstance(candidate, pd.DataFrame) and not candidate.empty:
+                dfs_by_timeframe[str(tf)] = candidate
+        snapshot = build_level_zone_snapshot(
+            symbol=str(symbol),
+            price=price,
+            dfs_by_timeframe=dfs_by_timeframe,
+            router_cfg=router_cfg,
+        )
+        return level_snapshot_to_dict(snapshot)
 
     def _emit_signal_breakdown(self, signal: Dict[str, Any]) -> None:
         """Emit a StrategyCoordinator-compatible SIGNAL_BREAKDOWN line.
@@ -993,6 +1227,10 @@ class ProductionCoordinator:
         }
         rsi_router_cfg = self._get_rsi_zone_router_cfg()
         rsi_router_enabled = bool(rsi_router_cfg.get("enabled", False))
+        level_router_cfg = self._get_level_zone_router_cfg()
+        level_router_enabled = bool(level_router_cfg.get("enabled", False))
+        level_source_cfg = level_router_cfg.get("source", {}) if isinstance(level_router_cfg.get("source"), dict) else {}
+        level_router_timeframes = self._normalize_timeframe_list(level_source_cfg.get("timeframes"), default=["15m", "1h"])
 
         mean_reversion_strategy_key = None
         mean_reversion_instance = None
@@ -1120,6 +1358,47 @@ class ProductionCoordinator:
                     if mtf_15m_enabled:
                         df_15m = await self.market_data_pipeline.get_latest_ohlcv(symbol, "15m")
 
+                    # Level router may require additional timeframe snapshots even when STR MTF is off.
+                    if level_router_enabled:
+                        for tf in level_router_timeframes:
+                            tf_norm = str(tf).strip().lower()
+                            if tf_norm in {"", "30m"}:
+                                continue
+                            existing = None
+                            if tf_norm == "1h":
+                                existing = df_1h
+                            elif tf_norm == "15m":
+                                existing = df_15m
+                            elif tf_norm == "1m":
+                                existing = df_1m
+                            elif tf_norm == "5m":
+                                existing = df_5m
+                            elif tf_norm == "4h":
+                                existing = df_4h
+                            if existing is not None and not getattr(existing, "empty", True):
+                                continue
+                            try:
+                                fetched = await self.market_data_pipeline.get_latest_ohlcv(
+                                    symbol,
+                                    tf_norm,
+                                    limit=300,
+                                    include_forming=False,
+                                )
+                            except Exception:
+                                fetched = None
+                            if fetched is None or getattr(fetched, "empty", True):
+                                continue
+                            if tf_norm == "1h":
+                                df_1h = fetched
+                            elif tf_norm == "15m":
+                                df_15m = fetched
+                            elif tf_norm == "1m":
+                                df_1m = fetched
+                            elif tf_norm == "5m":
+                                df_5m = fetched
+                            elif tf_norm == "4h":
+                                df_4h = fetched
+
                     # Provide fast timeframes (e.g. for Adaptive_OB TP-Band) to avoid "Missing dataframe" ghost-data.
                     needs_fast_mtf = any(
                         (name == "adaptive_ob") or (getattr(instance, "strategy_name", "") == "adaptive_ob")
@@ -1173,8 +1452,26 @@ class ProductionCoordinator:
             if df_5m is not None:
                 market_data["5m"] = df_5m
                 market_data["df_5m"] = df_5m
-            if mtf_15m_enabled:
+            if mtf_15m_enabled or (level_router_enabled and df_15m is not None and not getattr(df_15m, "empty", True)):
                 market_data['15m'] = df_15m
+            if level_router_enabled:
+                for tf in level_router_timeframes:
+                    tf_norm = str(tf).strip().lower()
+                    if not tf_norm:
+                        continue
+                    if tf_norm in market_data and isinstance(market_data.get(tf_norm), pd.DataFrame):
+                        continue
+                    try:
+                        fetched_tf = await self.market_data_pipeline.get_latest_ohlcv(
+                            symbol,
+                            tf_norm,
+                            limit=300,
+                            include_forming=False,
+                        )
+                    except Exception:
+                        fetched_tf = None
+                    if fetched_tf is not None and not getattr(fetched_tf, "empty", True):
+                        market_data[tf_norm] = fetched_tf
 
             regime_data = None
             try:
@@ -1279,6 +1576,45 @@ class ProductionCoordinator:
                 else:
                     market_data["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
 
+            level_zone_snapshot = None
+            if level_router_enabled:
+                level_price = None
+                for candidate_df in (
+                    market_data.get("5m"),
+                    market_data.get("15m"),
+                    market_data.get("30m_closed"),
+                    market_data.get("30m"),
+                    market_data.get("1h"),
+                ):
+                    if not isinstance(candidate_df, pd.DataFrame) or candidate_df.empty or "close" not in candidate_df.columns:
+                        continue
+                    try:
+                        close_val = float(candidate_df["close"].iloc[-1])
+                        if math.isfinite(close_val) and close_val > 0:
+                            level_price = close_val
+                            break
+                    except Exception:
+                        continue
+                level_zone_snapshot = self._build_symbol_level_zone_snapshot(
+                    symbol=symbol,
+                    price=level_price,
+                    market_data=market_data,
+                    router_cfg=level_router_cfg,
+                )
+                if level_zone_snapshot is None:
+                    logger.warning(
+                        "[LEVEL-ROUTER] Snapshot unavailable for %s (router enabled); failing open for this cycle.",
+                        symbol,
+                    )
+                else:
+                    market_data["level_zone_snapshot"] = dict(level_zone_snapshot)
+
+            if isinstance(mr_market_data_base, dict):
+                if isinstance(rsi_zone_snapshot, dict):
+                    mr_market_data_base["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
+                if isinstance(level_zone_snapshot, dict):
+                    mr_market_data_base["level_zone_snapshot"] = dict(level_zone_snapshot)
+
             for strategy_name, strategy_instance in strategies_to_run:
                 try:
                     if not self.portfolio_manager.strategy_metadata.get(strategy_name, {}).get('active', False):
@@ -1287,7 +1623,7 @@ class ProductionCoordinator:
 
                     gate_strategy_name = str(getattr(strategy_instance, "strategy_name", "") or strategy_name)
                     if rsi_router_enabled and rsi_zone_snapshot is not None:
-                        allowed, reason_code = is_strategy_allowed(
+                        allowed, reason_code = is_rsi_strategy_allowed(
                             gate_strategy_name,
                             None,
                             rsi_zone_snapshot,
@@ -1301,6 +1637,56 @@ class ProductionCoordinator:
                                 reason_code,
                                 rsi_zone_snapshot.get("zone"),
                             )
+                            continue
+                    if level_router_enabled and level_zone_snapshot is not None:
+                        allowed, reason_code = is_level_strategy_allowed(
+                            gate_strategy_name,
+                            None,
+                            level_zone_snapshot,
+                            level_router_cfg,
+                        )
+                        self._emit_level_router_decision(
+                            scope="main_loop",
+                            symbol=symbol,
+                            strategy_name=gate_strategy_name,
+                            side=None,
+                            allowed=bool(allowed),
+                            reason_code=reason_code,
+                            level_zone_snapshot=level_zone_snapshot,
+                            level_router_cfg=level_router_cfg,
+                        )
+                        if not allowed:
+                            logger.info(
+                                "[LEVEL-ROUTER] Skip | symbol=%s | strategy=%s | reason=%s | zone=%s",
+                                symbol,
+                                gate_strategy_name,
+                                reason_code,
+                                level_zone_snapshot.get("zone"),
+                            )
+                            soft_event = self._build_level_router_soft_deferral_event(
+                                strategy_name=strategy_name,
+                                strategy_instance=strategy_instance,
+                                symbol=symbol,
+                                reason_code=reason_code,
+                                level_zone_snapshot=level_zone_snapshot,
+                                level_router_cfg=level_router_cfg,
+                            )
+                            if isinstance(soft_event, dict):
+                                try:
+                                    await self._route_strategy_output(strategy_name, soft_event)
+                                    logger.info(
+                                        "[LEVEL-ROUTER] AT_LEVEL deferred | symbol=%s | strategy=%s | policy=%s",
+                                        symbol,
+                                        gate_strategy_name,
+                                        soft_event.get("refresh_policy"),
+                                    )
+                                except Exception as exc:
+                                    logger.debug(
+                                        "[LEVEL-ROUTER] soft deferral enqueue failed | symbol=%s | strategy=%s | error=%s",
+                                        symbol,
+                                        gate_strategy_name,
+                                        exc,
+                                    )
                             continue
                     
                     if hasattr(strategy_instance, 'signal') and callable(getattr(strategy_instance, 'signal')):
@@ -1320,6 +1706,10 @@ class ProductionCoordinator:
                             signal_kwargs["rsi_zone_router_cfg"] = dict(rsi_router_cfg)
                         if isinstance(rsi_zone_snapshot, dict):
                             signal_kwargs["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
+                        if isinstance(level_router_cfg, dict):
+                            signal_kwargs["level_zone_router_cfg"] = dict(level_router_cfg)
+                        if isinstance(level_zone_snapshot, dict):
+                            signal_kwargs["level_zone_snapshot"] = dict(level_zone_snapshot)
                         if isinstance(shock_snapshot, dict):
                             signal_kwargs["shock_state"] = shock_snapshot.get("state")
                             signal_kwargs["shock_score"] = shock_snapshot.get("shock_score")
@@ -1348,6 +1738,11 @@ class ProductionCoordinator:
                             signal = result
                         
                         if signal:
+                            signal = self._attach_router_snapshots_to_signal(
+                                signal,
+                                rsi_zone_snapshot=rsi_zone_snapshot,
+                                level_zone_snapshot=level_zone_snapshot,
+                            )
                             # Propagate fast shock state (from adaptive_ob dyn gate) downstream so central
                             # gating modules (volume/incubator) can make ARMED-specific decisions.
                             if isinstance(shock_snapshot, dict) and shock_snapshot:
@@ -1791,6 +2186,7 @@ class ProductionCoordinator:
             pending_id=pending_id,
             side=side,
             timeframe=timeframe,
+            refresh_policy=refresh_policy,
             pending_reason_code=pending_reason_code,
             condition_data=condition_data,
             check_detail=check_detail,
@@ -1859,6 +2255,7 @@ class ProductionCoordinator:
         pending_id: Optional[str] = None,
         side: Optional[str] = None,
         timeframe: Optional[str] = None,
+        refresh_policy: Optional[str] = None,
         pending_reason_code: Optional[str] = None,
         condition_data: Optional[Dict[str, Any]] = None,
         check_detail: Optional[Dict[str, Any]] = None,
@@ -1894,6 +2291,13 @@ class ProductionCoordinator:
             except Exception:
                 timeframe_str = None
 
+        refresh_policy_str = None
+        if refresh_policy is not None:
+            try:
+                refresh_policy_str = str(refresh_policy).strip().upper()
+            except Exception:
+                refresh_policy_str = None
+
         attempt = None
         if parent_pending_id_str:
             tracker = getattr(self, "_soft_deferral_recheck_attempts", None)
@@ -1920,6 +2324,11 @@ class ProductionCoordinator:
         rsi_router_cfg = self._get_rsi_zone_router_cfg()
         rsi_router_enabled = bool(rsi_router_cfg.get("enabled", False))
         rsi_zone_snapshot: Optional[Dict[str, Any]] = None
+        level_router_cfg = self._get_level_zone_router_cfg()
+        level_router_enabled = bool(level_router_cfg.get("enabled", False))
+        level_router_source_cfg = level_router_cfg.get("source", {}) if isinstance(level_router_cfg.get("source"), dict) else {}
+        level_router_timeframes = self._normalize_timeframe_list(level_router_source_cfg.get("timeframes"), default=["15m", "1h"])
+        level_zone_snapshot: Optional[Dict[str, Any]] = None
         try:
             if not symbol or not strategy:
                 error_code = "invalid_args"
@@ -1976,6 +2385,7 @@ class ProductionCoordinator:
             shock_score = None
             router_df_slow = None
             router_df_fast = None
+            level_router_market_data: Dict[str, pd.DataFrame] = {}
 
             def _coerce_finite_float(value: Any) -> Optional[float]:
                 try:
@@ -2116,6 +2526,13 @@ class ProductionCoordinator:
                     strategy_df_30m = df_30m_hybrid
                 router_df_slow = strategy_df_30m if strategy_df_30m is not None else df_30m_closed
 
+                if isinstance(df_30m_closed, pd.DataFrame) and not df_30m_closed.empty:
+                    level_router_market_data["30m"] = df_30m_closed
+                if isinstance(df_1h, pd.DataFrame) and not df_1h.empty:
+                    level_router_market_data["1h"] = df_1h
+                if isinstance(df_4h, pd.DataFrame) and not df_4h.empty:
+                    level_router_market_data["4h"] = df_4h
+
                 # Ensure Adaptive_OB can access fast timeframes during recheck decisions.
                 if strategy in {"adaptive_ob", "adaptive_str"}:
                     fast_limit = 350
@@ -2131,6 +2548,29 @@ class ProductionCoordinator:
                         df_1m = None
                         df_5m = None
                 router_df_fast = df_5m
+                if isinstance(df_1m, pd.DataFrame) and not getattr(df_1m, "empty", True):
+                    level_router_market_data["1m"] = df_1m
+                if isinstance(df_5m, pd.DataFrame) and not getattr(df_5m, "empty", True):
+                    level_router_market_data["5m"] = df_5m
+
+                if level_router_enabled:
+                    for tf in level_router_timeframes:
+                        tf_norm = str(tf).strip().lower()
+                        if not tf_norm:
+                            continue
+                        if tf_norm in level_router_market_data:
+                            continue
+                        try:
+                            fetched = await self.market_data_pipeline.get_latest_ohlcv(
+                                symbol,
+                                tf_norm,
+                                limit=300,
+                                include_forming=False,
+                            )
+                        except Exception:
+                            fetched = None
+                        if isinstance(fetched, pd.DataFrame) and not fetched.empty:
+                            level_router_market_data[tf_norm] = fetched
 
                 signal_kwargs.update(
                     {
@@ -2225,6 +2665,10 @@ class ProductionCoordinator:
                     rows_returned_by_tf[signal_tf_str] = 0
 
                 signal_kwargs.update({"df_vwap": df_vwap, "df_sig": df_sig})
+                if isinstance(df_vwap, pd.DataFrame) and not df_vwap.empty:
+                    level_router_market_data[vwap_tf_str] = df_vwap
+                if isinstance(df_sig, pd.DataFrame) and not df_sig.empty:
+                    level_router_market_data[signal_tf_str] = df_sig
 
                 if getattr(self, "market_regime_analyzer", None) and self.market_data_pipeline:
                     try:
@@ -2240,6 +2684,12 @@ class ProductionCoordinator:
                             )
                             signal_kwargs["regime_data"] = regime_data
                             router_df_slow = df_reg_30m
+                            if isinstance(df_reg_30m, pd.DataFrame) and not df_reg_30m.empty:
+                                level_router_market_data["30m"] = df_reg_30m
+                            if isinstance(df_reg_1h, pd.DataFrame) and not df_reg_1h.empty:
+                                level_router_market_data["1h"] = df_reg_1h
+                            if isinstance(df_reg_4h, pd.DataFrame) and not df_reg_4h.empty:
+                                level_router_market_data["4h"] = df_reg_4h
                     except Exception:
                         pass
 
@@ -2272,6 +2722,25 @@ class ProductionCoordinator:
                     signal_kwargs["shock_state"] = shock_state
                 if shock_score is not None:
                     signal_kwargs["shock_score"] = shock_score
+
+                if level_router_enabled:
+                    for tf in level_router_timeframes:
+                        tf_norm = str(tf).strip().lower()
+                        if not tf_norm:
+                            continue
+                        if tf_norm in level_router_market_data:
+                            continue
+                        try:
+                            fetched = await self.market_data_pipeline.get_latest_ohlcv(
+                                symbol,
+                                tf_norm,
+                                limit=300,
+                                include_forming=False,
+                            )
+                        except Exception:
+                            fetched = None
+                        if isinstance(fetched, pd.DataFrame) and not fetched.empty:
+                            level_router_market_data[tf_norm] = fetched
 
             if rsi_router_enabled:
                 try:
@@ -2307,7 +2776,7 @@ class ProductionCoordinator:
                     )
                 else:
                     gate_strategy_name = str(getattr(strategy_instance, "strategy_name", "") or strategy)
-                    allowed, reason_code = is_strategy_allowed(
+                    allowed, reason_code = is_rsi_strategy_allowed(
                         gate_strategy_name,
                         canonical_side,
                         rsi_zone_snapshot,
@@ -2330,10 +2799,114 @@ class ProductionCoordinator:
                             "final_reason": final_reason,
                         } if return_detail else False
 
+            if level_router_enabled:
+                level_price = None
+                for candidate_df in (
+                    level_router_market_data.get("5m"),
+                    level_router_market_data.get("15m"),
+                    level_router_market_data.get("30m"),
+                    level_router_market_data.get("1h"),
+                    router_df_fast,
+                    router_df_slow,
+                ):
+                    if not isinstance(candidate_df, pd.DataFrame) or candidate_df.empty or "close" not in candidate_df.columns:
+                        continue
+                    try:
+                        close_val = float(candidate_df["close"].iloc[-1])
+                        if math.isfinite(close_val) and close_val > 0:
+                            level_price = close_val
+                            break
+                    except Exception:
+                        continue
+
+                level_zone_snapshot = self._build_symbol_level_zone_snapshot(
+                    symbol=symbol,
+                    price=level_price,
+                    market_data=level_router_market_data,
+                    router_cfg=level_router_cfg,
+                )
+                if level_zone_snapshot is None:
+                    logger.warning(
+                        "[LEVEL-ROUTER] Snapshot unavailable during dispatch_strategy | symbol=%s | strategy=%s | fail-open",
+                        symbol,
+                        str(getattr(strategy_instance, "strategy_name", "") or strategy),
+                    )
+                else:
+                    gate_strategy_name = str(getattr(strategy_instance, "strategy_name", "") or strategy)
+                    allowed, reason_code = is_level_strategy_allowed(
+                        gate_strategy_name,
+                        canonical_side,
+                        level_zone_snapshot,
+                        level_router_cfg,
+                    )
+                    self._emit_level_router_decision(
+                        scope="recheck",
+                        symbol=symbol,
+                        strategy_name=gate_strategy_name,
+                        side=canonical_side,
+                        allowed=bool(allowed),
+                        reason_code=reason_code,
+                        level_zone_snapshot=level_zone_snapshot,
+                        level_router_cfg=level_router_cfg,
+                        parent_pending_id=parent_pending_id_str or None,
+                        pending_id=pending_id,
+                        refresh_policy=refresh_policy_str,
+                    )
+                    if not allowed:
+                        zone_str = str(level_zone_snapshot.get("zone") or "").strip().upper()
+                        reason_code_str = str(reason_code or "level_router.zone_mismatch")
+                        logger.info(
+                            "[LEVEL-ROUTER] Recheck blocked | symbol=%s | strategy=%s | reason=%s | zone=%s",
+                            symbol,
+                            gate_strategy_name,
+                            reason_code_str,
+                            zone_str,
+                        )
+
+                        if parent_pending_id_str and reason_code_str == "level_router.at_level":
+                            final_reason = "level_router.breakout_unconfirmed"
+                            pending_reason_code = final_reason
+                            should_rearm = bool(refresh_policy_str == "FAST_PRICE_WATCH" and pending_id)
+                            decision_meta = {
+                                "rearm_fast_watch": bool(should_rearm),
+                                "rearm_reason": final_reason,
+                                "router_reason": reason_code_str,
+                                "router_zone": zone_str,
+                            }
+                            outcome = "rearmed" if should_rearm else "no_signal"
+                            return {
+                                "dispatched": False,
+                                "rearm_fast_watch": bool(should_rearm),
+                                "decision_meta": dict(decision_meta),
+                                "final_reason": final_reason,
+                            } if return_detail else False
+
+                        final_reason = reason_code_str
+                        if parent_pending_id_str:
+                            final_reason = "level_router.recheck_cancelled"
+                            pending_reason_code = final_reason
+                        outcome = "no_signal"
+                        decision_meta = {
+                            "rearm_fast_watch": False,
+                            "rearm_reason": final_reason,
+                            "router_reason": reason_code_str,
+                            "router_zone": zone_str,
+                        }
+                        return {
+                            "dispatched": False,
+                            "rearm_fast_watch": False,
+                            "decision_meta": dict(decision_meta),
+                            "final_reason": final_reason,
+                        } if return_detail else False
+
             if isinstance(rsi_router_cfg, dict):
                 signal_kwargs["rsi_zone_router_cfg"] = dict(rsi_router_cfg)
             if isinstance(rsi_zone_snapshot, dict):
                 signal_kwargs["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
+            if isinstance(level_router_cfg, dict):
+                signal_kwargs["level_zone_router_cfg"] = dict(level_router_cfg)
+            if isinstance(level_zone_snapshot, dict):
+                signal_kwargs["level_zone_snapshot"] = dict(level_zone_snapshot)
 
             try:
                 if "market_data" in inspect.signature(strategy_instance.signal).parameters:
@@ -2366,12 +2939,23 @@ class ProductionCoordinator:
                         )
                     if isinstance(rsi_zone_snapshot, dict):
                         market_data["rsi_zone_snapshot"] = dict(rsi_zone_snapshot)
+                    if isinstance(level_zone_snapshot, dict):
+                        market_data["level_zone_snapshot"] = dict(level_zone_snapshot)
+                    if level_router_market_data:
+                        for tf, df_tf in level_router_market_data.items():
+                            if tf not in market_data and isinstance(df_tf, pd.DataFrame) and not df_tf.empty:
+                                market_data[tf] = df_tf
                     signal_kwargs["market_data"] = market_data
             except Exception:
                 pass
 
             raw = strategy_instance.signal(**signal_kwargs)
             signal = await raw if inspect.iscoroutine(raw) else raw
+            signal = self._attach_router_snapshots_to_signal(
+                signal,
+                rsi_zone_snapshot=rsi_zone_snapshot,
+                level_zone_snapshot=level_zone_snapshot,
+            )
             if isinstance(signal, dict) and signal.get("event_type") == "strategy_recheck_decision":
                 decision_meta = signal.get("decision_meta") if isinstance(signal.get("decision_meta"), dict) else {}
                 rearm_fast_watch = bool(decision_meta.get("rearm_fast_watch"))

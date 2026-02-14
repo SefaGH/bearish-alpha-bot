@@ -474,6 +474,20 @@ signals:
   volume_policy:
     # If true and signal.meta.shock_state == ARMED, LOW-bucket rejects are short-incubated instead.
     defer_on_shock_low_bucket: true
+
+  # Directional bias (non-ML, quality-only adjuster)
+  # - Consumes level_zone_snapshot produced by ProductionCoordinator level router.
+  # - Never opens/closes trades by itself; only nudges quality score.
+  directional_bias:
+    enabled: true                    # Override with: SIGNALS__DIRECTIONAL_BIAS__ENABLED
+    mode: "quality_adjust_only"      # quality_adjust_only | off
+    weight: 0.10                     # Override with: SIGNALS__DIRECTIONAL_BIAS__WEIGHT
+    max_quality_delta: 0.08          # Override with: SIGNALS__DIRECTIONAL_BIAS__MAX_QUALITY_DELTA
+    at_level_penalty: 0.05           # Override with: SIGNALS__DIRECTIONAL_BIAS__AT_LEVEL_PENALTY
+    rollout:
+      mode: "observe"                # Override with: SIGNALS__DIRECTIONAL_BIAS__ROLLOUT__MODE ; enforce | observe | off
+      canary_symbols:
+        - "BTC/USDT:USDT"            # Override with: SIGNALS__DIRECTIONAL_BIAS__ROLLOUT__CANARY_SYMBOLS ; "*" = all symbols
   
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
@@ -875,6 +889,49 @@ strategies:
     telemetry:
       enabled: true                   # Override with: STRATEGIES__RSI_ZONE_ROUTER__TELEMETRY__ENABLED
       log_state_changes_only: true    # Override with: STRATEGIES__RSI_ZONE_ROUTER__TELEMETRY__LOG_STATE_CHANGES_ONLY
+
+  # Key Level Zone Router (central S/R-aware gate; fail-open on snapshot missing/unknown)
+  # Purpose:
+  # - Build support/resistance state snapshot from selected timeframes.
+  # - Apply the same central gate in main loop and recheck path.
+  # - Treat AT_LEVEL as uncertainty zone (optional no-trade for new entries).
+  level_zone_router:
+    enabled: true                     # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ENABLED
+    source:
+      mode: "consensus"               # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__SOURCE__MODE ; single_tf | consensus
+      timeframes:
+        - "15m"
+        - "1h"
+    levels:
+      method: "smc"                   # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__METHOD ; smc | kmeans
+      pivot_left: 5                   # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__PIVOT_LEFT
+      pivot_right: 3                  # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__PIVOT_RIGHT
+      lookback_bars: 200              # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__LOOKBACK_BARS
+      band_pct: 0.005                 # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__BAND_PCT
+      smc_cluster_pct: 0.01           # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__SMC_CLUSTER_PCT
+      min_cluster_n: 2                # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__MIN_CLUSTER_N
+      kmin: 2                         # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__KMIN
+      kmax: 8                         # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__KMAX
+      touch_proximity_bps: 30.0       # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__LEVELS__TOUCH_PROXIMITY_BPS
+    zones:
+      near_level_bps: 50.0            # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ZONES__NEAR_LEVEL_BPS
+      decision_zone_low: 0.40         # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ZONES__DECISION_ZONE_LOW
+      decision_zone_high: 0.60        # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ZONES__DECISION_ZONE_HIGH
+      no_trade_new_entry: true        # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ZONES__NO_TRADE_NEW_ENTRY
+    breakout:
+      min_close_bars: 2               # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__BREAKOUT__MIN_CLOSE_BARS
+      min_volume_mult: 1.5            # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__BREAKOUT__MIN_VOLUME_MULT
+      use_trend_guard_confirmation: true  # Reserved toggle for future refinement
+    rollout:
+      mode: "observe"                 # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ROLLOUT__MODE ; enforce | observe | off
+      canary_symbols:
+        - "BTC/USDT:USDT"             # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ROLLOUT__CANARY_SYMBOLS ; "*" = all symbols
+    soft_deferral:
+      enabled: true
+      mode: "fast_watch_then_recheck"
+    telemetry:
+      enabled: true
+      log_state_changes_only: true
 
   adaptive_ob:
     execution_profile: "standard_mode"  # Hybrid: DCA+pyramiding enabled

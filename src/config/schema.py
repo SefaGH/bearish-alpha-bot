@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Literal, Tuple
 
 PYDANTIC_AVAILABLE = False
@@ -193,6 +194,264 @@ def _validate_rsi_zone_router(config_data: Dict[str, Any]) -> List[Tuple[str, st
     return errors
 
 
+def _validate_level_zone_router(config_data: Dict[str, Any]) -> List[Tuple[str, str]]:
+    errors: List[Tuple[str, str]] = []
+    strategies = config_data.get("strategies")
+    if not isinstance(strategies, dict):
+        return errors
+
+    router_cfg = strategies.get("level_zone_router")
+    if router_cfg is None:
+        return errors
+    if not isinstance(router_cfg, dict):
+        errors.append(("strategies.level_zone_router", "must be a mapping/object"))
+        return errors
+
+    source_cfg = router_cfg.get("source")
+    if source_cfg is not None and not isinstance(source_cfg, dict):
+        errors.append(("strategies.level_zone_router.source", "must be a mapping/object"))
+    elif isinstance(source_cfg, dict):
+        mode = source_cfg.get("mode")
+        if mode is not None:
+            if not isinstance(mode, str):
+                errors.append(("strategies.level_zone_router.source.mode", "must be one of: single_tf|consensus"))
+            else:
+                mode_norm = mode.strip().lower()
+                if mode_norm not in {"single_tf", "consensus"}:
+                    errors.append(
+                        (
+                            "strategies.level_zone_router.source.mode",
+                            f"invalid value '{mode}'; allowed: single_tf|consensus",
+                        )
+                    )
+        tfs = source_cfg.get("timeframes")
+        if tfs is not None:
+            if isinstance(tfs, str):
+                if not [part.strip() for part in tfs.split(",") if part.strip()]:
+                    errors.append(("strategies.level_zone_router.source.timeframes", "must contain at least one timeframe"))
+            elif isinstance(tfs, (list, tuple)):
+                if not [str(item).strip() for item in tfs if str(item).strip()]:
+                    errors.append(("strategies.level_zone_router.source.timeframes", "must contain at least one timeframe"))
+            else:
+                errors.append(("strategies.level_zone_router.source.timeframes", "must be list[str] or CSV string"))
+
+    levels_cfg = router_cfg.get("levels")
+    if levels_cfg is not None and not isinstance(levels_cfg, dict):
+        errors.append(("strategies.level_zone_router.levels", "must be a mapping/object"))
+    elif isinstance(levels_cfg, dict):
+        float_keys = ("band_pct", "smc_cluster_pct", "touch_proximity_bps")
+        int_keys = ("pivot_left", "pivot_right", "lookback_bars", "min_cluster_n", "kmin", "kmax")
+        for key in float_keys:
+            raw = levels_cfg.get(key)
+            if raw is None:
+                continue
+            try:
+                val = float(raw)
+                if not math.isfinite(val):
+                    raise ValueError
+                if val <= 0:
+                    errors.append((f"strategies.level_zone_router.levels.{key}", "must be > 0"))
+            except Exception:
+                errors.append((f"strategies.level_zone_router.levels.{key}", "must be a finite number"))
+        for key in int_keys:
+            raw = levels_cfg.get(key)
+            if raw is None:
+                continue
+            try:
+                val = int(raw)
+                if val <= 0:
+                    errors.append((f"strategies.level_zone_router.levels.{key}", "must be > 0"))
+            except Exception:
+                errors.append((f"strategies.level_zone_router.levels.{key}", "must be an integer > 0"))
+
+    zones_cfg = router_cfg.get("zones")
+    if zones_cfg is not None and not isinstance(zones_cfg, dict):
+        errors.append(("strategies.level_zone_router.zones", "must be a mapping/object"))
+    elif isinstance(zones_cfg, dict):
+        for key in ("near_level_bps", "decision_zone_low", "decision_zone_high"):
+            raw = zones_cfg.get(key)
+            if raw is None:
+                continue
+            try:
+                val = float(raw)
+                if not math.isfinite(val):
+                    raise ValueError
+            except Exception:
+                errors.append((f"strategies.level_zone_router.zones.{key}", "must be a finite number"))
+        low_raw = zones_cfg.get("decision_zone_low")
+        high_raw = zones_cfg.get("decision_zone_high")
+        try:
+            if low_raw is not None:
+                low = float(low_raw)
+                if low < 0 or low > 1:
+                    errors.append(("strategies.level_zone_router.zones.decision_zone_low", "must be in [0, 1]"))
+        except Exception:
+            pass
+        try:
+            if high_raw is not None:
+                high = float(high_raw)
+                if high < 0 or high > 1:
+                    errors.append(("strategies.level_zone_router.zones.decision_zone_high", "must be in [0, 1]"))
+        except Exception:
+            pass
+        try:
+            if low_raw is not None and high_raw is not None and float(low_raw) > float(high_raw):
+                errors.append(("strategies.level_zone_router.zones", "decision_zone_low must be <= decision_zone_high"))
+        except Exception:
+            pass
+
+    breakout_cfg = router_cfg.get("breakout")
+    if breakout_cfg is not None and not isinstance(breakout_cfg, dict):
+        errors.append(("strategies.level_zone_router.breakout", "must be a mapping/object"))
+    elif isinstance(breakout_cfg, dict):
+        raw_bars = breakout_cfg.get("min_close_bars")
+        if raw_bars is not None:
+            try:
+                bars = int(raw_bars)
+                if bars <= 0:
+                    errors.append(("strategies.level_zone_router.breakout.min_close_bars", "must be > 0"))
+            except Exception:
+                errors.append(("strategies.level_zone_router.breakout.min_close_bars", "must be an integer > 0"))
+        raw_mult = breakout_cfg.get("min_volume_mult")
+        if raw_mult is not None:
+            try:
+                mult = float(raw_mult)
+                if (not math.isfinite(mult)) or mult <= 0:
+                    errors.append(("strategies.level_zone_router.breakout.min_volume_mult", "must be > 0"))
+            except Exception:
+                errors.append(("strategies.level_zone_router.breakout.min_volume_mult", "must be a finite number"))
+
+    rollout_cfg = router_cfg.get("rollout")
+    if rollout_cfg is not None and not isinstance(rollout_cfg, dict):
+        errors.append(("strategies.level_zone_router.rollout", "must be a mapping/object"))
+    elif isinstance(rollout_cfg, dict):
+        mode = rollout_cfg.get("mode")
+        if mode is not None:
+            if not isinstance(mode, str):
+                errors.append(("strategies.level_zone_router.rollout.mode", "must be one of: enforce|observe|off|disabled"))
+            else:
+                mode_norm = mode.strip().lower()
+                if mode_norm not in {"enforce", "observe", "off", "disabled"}:
+                    errors.append(
+                        (
+                            "strategies.level_zone_router.rollout.mode",
+                            f"invalid value '{mode}'; allowed: enforce|observe|off|disabled",
+                        )
+                    )
+        canary_symbols = rollout_cfg.get("canary_symbols")
+        canary_path = "strategies.level_zone_router.rollout.canary_symbols"
+        if canary_symbols is not None:
+            if isinstance(canary_symbols, str):
+                tokens = [part.strip() for part in canary_symbols.split(",") if part.strip()]
+                if canary_symbols.strip() and not tokens:
+                    errors.append((canary_path, "CSV string must contain at least one non-empty symbol token"))
+                for idx, token in enumerate(tokens):
+                    if not _is_valid_canary_symbol_token(token):
+                        errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+            elif isinstance(canary_symbols, (list, tuple, set)):
+                for idx, token in enumerate(canary_symbols):
+                    if not isinstance(token, str):
+                        errors.append((f"{canary_path}[{idx}]", "must be a string symbol token"))
+                        continue
+                    token_norm = token.strip()
+                    if not _is_valid_canary_symbol_token(token_norm):
+                        errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+            else:
+                errors.append((canary_path, "must be list[str] or CSV string"))
+
+    return errors
+
+
+def _validate_directional_bias_config(config_data: Dict[str, Any]) -> List[Tuple[str, str]]:
+    errors: List[Tuple[str, str]] = []
+    signals = config_data.get("signals")
+    if not isinstance(signals, dict):
+        return errors
+
+    cfg = signals.get("directional_bias")
+    if cfg is None:
+        return errors
+    if not isinstance(cfg, dict):
+        errors.append(("signals.directional_bias", "must be a mapping/object"))
+        return errors
+
+    mode = cfg.get("mode")
+    if mode is not None:
+        if not isinstance(mode, str):
+            errors.append(("signals.directional_bias.mode", "must be one of: quality_adjust_only|off|disabled"))
+        else:
+            mode_norm = mode.strip().lower()
+            if mode_norm not in {"quality_adjust_only", "off", "disabled"}:
+                errors.append(
+                    (
+                        "signals.directional_bias.mode",
+                        f"invalid value '{mode}'; allowed: quality_adjust_only|off|disabled",
+                    )
+                )
+
+    for key in ("weight", "max_quality_delta", "at_level_penalty"):
+        raw = cfg.get(key)
+        if raw is None:
+            continue
+        try:
+            val = float(raw)
+            if not math.isfinite(val):
+                raise ValueError
+            if val < 0:
+                errors.append((f"signals.directional_bias.{key}", "must be >= 0"))
+        except Exception:
+            errors.append((f"signals.directional_bias.{key}", "must be a finite number"))
+
+    raw_max_delta = cfg.get("max_quality_delta")
+    if raw_max_delta is not None:
+        try:
+            max_delta = float(raw_max_delta)
+            if max_delta > 1.0:
+                errors.append(("signals.directional_bias.max_quality_delta", "must be <= 1.0"))
+        except Exception:
+            pass
+
+    rollout_cfg = cfg.get("rollout")
+    if rollout_cfg is not None and not isinstance(rollout_cfg, dict):
+        errors.append(("signals.directional_bias.rollout", "must be a mapping/object"))
+    elif isinstance(rollout_cfg, dict):
+        mode = rollout_cfg.get("mode")
+        if mode is not None:
+            if not isinstance(mode, str):
+                errors.append(("signals.directional_bias.rollout.mode", "must be one of: enforce|observe|off|disabled"))
+            else:
+                mode_norm = mode.strip().lower()
+                if mode_norm not in {"enforce", "observe", "off", "disabled"}:
+                    errors.append(
+                        (
+                            "signals.directional_bias.rollout.mode",
+                            f"invalid value '{mode}'; allowed: enforce|observe|off|disabled",
+                        )
+                    )
+        canary_symbols = rollout_cfg.get("canary_symbols")
+        canary_path = "signals.directional_bias.rollout.canary_symbols"
+        if canary_symbols is not None:
+            if isinstance(canary_symbols, str):
+                tokens = [part.strip() for part in canary_symbols.split(",") if part.strip()]
+                if canary_symbols.strip() and not tokens:
+                    errors.append((canary_path, "CSV string must contain at least one non-empty symbol token"))
+                for idx, token in enumerate(tokens):
+                    if not _is_valid_canary_symbol_token(token):
+                        errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+            elif isinstance(canary_symbols, (list, tuple, set)):
+                for idx, token in enumerate(canary_symbols):
+                    if not isinstance(token, str):
+                        errors.append((f"{canary_path}[{idx}]", "must be a string symbol token"))
+                        continue
+                    token_norm = token.strip()
+                    if not _is_valid_canary_symbol_token(token_norm):
+                        errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+            else:
+                errors.append((canary_path, "must be list[str] or CSV string"))
+
+    return errors
+
+
 def _iter_pct_violations(config: Any) -> List[Tuple[str, str]]:
     violations: List[Tuple[str, str]] = []
 
@@ -286,6 +545,8 @@ def validate_config_safety(config_data: Dict[str, Any]) -> None:
     errors.extend(_iter_pct_violations(config_data))
     errors.extend(_validate_promote_override_rollout(config_data))
     errors.extend(_validate_rsi_zone_router(config_data))
+    errors.extend(_validate_level_zone_router(config_data))
+    errors.extend(_validate_directional_bias_config(config_data))
 
     if errors:
         rendered = "\n".join(f"- {path}: {msg}" for path, msg in errors)
