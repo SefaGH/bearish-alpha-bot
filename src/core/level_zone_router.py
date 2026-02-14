@@ -354,11 +354,37 @@ def _normalize_symbol(value: Any) -> str:
         return ""
 
 
+def _normalize_canary_symbol_token(token: Any) -> Optional[str]:
+    if isinstance(token, str):
+        out = token.strip()
+        return out if out else None
+    if isinstance(token, dict) and len(token) == 1:
+        key, value = next(iter(token.items()))
+        key_str = str(key).strip() if key is not None else ""
+        if not key_str:
+            return None
+        if value is None:
+            return key_str
+        value_str = str(value).strip()
+        if not value_str:
+            return key_str
+        if ":" in key_str:
+            return key_str
+        if "/" in key_str:
+            return f"{key_str}:{value_str}"
+    return None
+
+
 def _parse_canary_symbols(value: Any) -> List[str]:
     if isinstance(value, str):
         return [token.strip() for token in value.split(",") if token.strip()]
     if isinstance(value, (list, tuple)):
-        return [str(token).strip() for token in value if str(token).strip()]
+        out: List[str] = []
+        for token in value:
+            norm = _normalize_canary_symbol_token(token)
+            if norm:
+                out.append(norm)
+        return out
     return []
 
 

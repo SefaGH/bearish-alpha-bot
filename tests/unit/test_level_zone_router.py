@@ -154,3 +154,14 @@ def test_level_zone_router_rollout_enforce_blocks_in_scope_canary_symbol():
 
     assert allowed is False
     assert reason == "level_router.at_level"
+
+
+def test_level_zone_router_rollout_accepts_mapping_style_canary_token():
+    cfg = _router_cfg()
+    cfg["rollout"] = {"mode": "enforce", "canary_symbols": [{"BTC/USDT": "USDT"}]}
+    snapshot = {"symbol": "BTC/USDT:USDT", "zone": "AT_LEVEL"}
+
+    allowed, reason = is_strategy_allowed("adaptive_ob", None, snapshot, cfg)
+
+    assert allowed is False
+    assert reason == "level_router.at_level"

@@ -110,3 +110,19 @@ def test_directional_bias_rollout_out_of_scope_returns_noop():
     assert out["applied"] is False
     assert out["delta"] == pytest.approx(0.0, rel=1e-6)
     assert out["reason"] == "directional_bias.rollout_out_of_scope"
+
+
+def test_directional_bias_rollout_accepts_mapping_style_canary_token():
+    signal = {"symbol": "BTC/USDT:USDT", "side": "buy", "level_zone_snapshot": {"zone": "BREAKOUT_UP_CONFIRMED"}}
+    cfg = {
+        "enabled": True,
+        "mode": "quality_adjust_only",
+        "weight": 0.10,
+        "max_quality_delta": 0.08,
+        "rollout": {"mode": "observe", "canary_symbols": [{"BTC/USDT": "USDT"}]},
+    }
+
+    out = compute_directional_bias_adjustment(signal, cfg)
+    assert out["enabled"] is True
+    assert out["applied"] is False
+    assert out["reason"] == "directional_bias.observe_only"

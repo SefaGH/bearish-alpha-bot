@@ -85,3 +85,10 @@ def test_level_zone_router_rejects_invalid_rollout_canary_symbol_token():
     with pytest.raises(ConfigSafetyError) as exc:
         validate_config_safety(cfg)
     assert "strategies.level_zone_router.rollout.canary_symbols" in str(exc.value)
+
+
+def test_level_zone_router_accepts_single_item_mapping_canary_symbol_token():
+    cfg = _base_config()
+    cfg["strategies"]["level_zone_router"]["rollout"]["canary_symbols"] = [{"BTC/USDT": "USDT"}]
+
+    validate_config_safety(cfg)

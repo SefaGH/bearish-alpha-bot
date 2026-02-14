@@ -46,6 +46,34 @@ def _is_valid_canary_symbol_token(token: str) -> bool:
     return True
 
 
+def _normalize_canary_symbol_token(token: Any) -> Optional[str]:
+    """Best-effort normalization for canary symbol token inputs.
+
+    Supports:
+    - "BTC/USDT:USDT"
+    - {"BTC/USDT": "USDT"}   # common YAML mapping artifact
+    - {"BTC/USDT:USDT": None}
+    """
+    if isinstance(token, str):
+        out = token.strip()
+        return out if out else None
+    if isinstance(token, dict) and len(token) == 1:
+        key, value = next(iter(token.items()))
+        key_str = str(key).strip() if key is not None else ""
+        if not key_str:
+            return None
+        if value is None:
+            return key_str
+        value_str = str(value).strip()
+        if not value_str:
+            return key_str
+        if ":" in key_str:
+            return key_str
+        if "/" in key_str:
+            return f"{key_str}:{value_str}"
+    return None
+
+
 def _validate_promote_override_rollout(config_data: Dict[str, Any]) -> List[Tuple[str, str]]:
     errors: List[Tuple[str, str]] = []
     strategies = config_data.get("strategies")
@@ -109,10 +137,10 @@ def _validate_promote_override_rollout(config_data: Dict[str, Any]) -> List[Tupl
         return errors
     if isinstance(canary_symbols, (list, tuple, set)):
         for idx, token in enumerate(canary_symbols):
-            if not isinstance(token, str):
+            token_norm = _normalize_canary_symbol_token(token)
+            if token_norm is None:
                 errors.append((f"{canary_path}[{idx}]", "must be a string symbol token"))
                 continue
-            token_norm = token.strip()
             if not _is_valid_canary_symbol_token(token_norm):
                 errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
         return errors
@@ -350,10 +378,10 @@ def _validate_level_zone_router(config_data: Dict[str, Any]) -> List[Tuple[str, 
                         errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
             elif isinstance(canary_symbols, (list, tuple, set)):
                 for idx, token in enumerate(canary_symbols):
-                    if not isinstance(token, str):
+                    token_norm = _normalize_canary_symbol_token(token)
+                    if token_norm is None:
                         errors.append((f"{canary_path}[{idx}]", "must be a string symbol token"))
                         continue
-                    token_norm = token.strip()
                     if not _is_valid_canary_symbol_token(token_norm):
                         errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
             else:
@@ -440,10 +468,10 @@ def _validate_directional_bias_config(config_data: Dict[str, Any]) -> List[Tuple
                         errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
             elif isinstance(canary_symbols, (list, tuple, set)):
                 for idx, token in enumerate(canary_symbols):
-                    if not isinstance(token, str):
+                    token_norm = _normalize_canary_symbol_token(token)
+                    if token_norm is None:
                         errors.append((f"{canary_path}[{idx}]", "must be a string symbol token"))
                         continue
-                    token_norm = token.strip()
                     if not _is_valid_canary_symbol_token(token_norm):
                         errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
             else:

@@ -59,3 +59,10 @@ def test_directional_bias_validation_rejects_invalid_rollout_canary_symbol_token
     with pytest.raises(ConfigSafetyError) as exc:
         validate_config_safety(cfg)
     assert "signals.directional_bias.rollout.canary_symbols" in str(exc.value)
+
+
+def test_directional_bias_validation_accepts_single_item_mapping_canary_symbol_token():
+    cfg = _base_config()
+    cfg["signals"]["directional_bias"]["rollout"]["canary_symbols"] = [{"BTC/USDT": "USDT"}]
+
+    validate_config_safety(cfg)
