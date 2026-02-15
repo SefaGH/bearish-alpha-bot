@@ -11,7 +11,7 @@ from .base_strategy import BaseStrategy
 from .mr_controller import DynamicMRController, MRControllerDecision
 from core.indicators import rsi as calc_rsi
 from core.logger import get_current_run_id
-from core.rsi_zone_router import is_strategy_allowed
+from core.rsi_zone_router import is_strategy_allowed, snapshot_log_context as rsi_snapshot_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -1767,11 +1767,18 @@ class VWAPMeanReversion(BaseStrategy):
             )
             if not allowed_by_router:
                 router_reason_code = str(router_reason or "rsi_router.zone_mismatch")
+                router_log_ctx = rsi_snapshot_log_context(rsi_zone_snapshot)
                 logger.info(
-                    "[MeanReversion] RSI router veto %s: reason=%s zone=%s",
+                    "[MeanReversion] RSI router veto %s: reason=%s zone=%s rsi_level=%s rsi_slow=%s rsi_fast=%s ob_threshold=%s str_threshold=%s consensus_status=%s",
                     symbol,
                     router_reason_code,
                     (rsi_zone_snapshot or {}).get("zone") if isinstance(rsi_zone_snapshot, dict) else None,
+                    router_log_ctx.get("rsi_level"),
+                    router_log_ctx.get("rsi_slow"),
+                    router_log_ctx.get("rsi_fast"),
+                    router_log_ctx.get("ob_threshold"),
+                    router_log_ctx.get("str_threshold"),
+                    router_log_ctx.get("consensus_status"),
                 )
                 eval_out = _emit_recheck_eval(
                     action="HOLD",
@@ -2745,13 +2752,20 @@ class VWAPMeanReversion(BaseStrategy):
                             rsi_zone_router_cfg,
                         )
                         if not allowed_for_deferral:
+                            router_log_ctx = rsi_snapshot_log_context(rsi_zone_snapshot)
                             logger.info(
-                                "[MeanReversion] Soft deferral cancelled by RSI router %s: reason=%s zone=%s",
+                                "[MeanReversion] Soft deferral cancelled by RSI router %s: reason=%s zone=%s rsi_level=%s rsi_slow=%s rsi_fast=%s ob_threshold=%s str_threshold=%s consensus_status=%s",
                                 symbol,
                                 str(deferral_reason or "rsi_router.deferral_cancelled"),
                                 (rsi_zone_snapshot or {}).get("zone")
                                 if isinstance(rsi_zone_snapshot, dict)
                                 else None,
+                                router_log_ctx.get("rsi_level"),
+                                router_log_ctx.get("rsi_slow"),
+                                router_log_ctx.get("rsi_fast"),
+                                router_log_ctx.get("ob_threshold"),
+                                router_log_ctx.get("str_threshold"),
+                                router_log_ctx.get("consensus_status"),
                             )
                             return None
 

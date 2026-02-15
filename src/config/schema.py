@@ -219,6 +219,30 @@ def _validate_rsi_zone_router(config_data: Dict[str, Any]) -> List[Tuple[str, st
             except Exception:
                 errors.append(("strategies.rsi_zone_router.transition.width", "must be a finite number"))
 
+        mismatch_override_cfg = transition_cfg.get("mismatch_extreme_override")
+        mismatch_override_path = "strategies.rsi_zone_router.transition.mismatch_extreme_override"
+        if mismatch_override_cfg is not None and not isinstance(mismatch_override_cfg, dict):
+            errors.append((mismatch_override_path, "must be a mapping/object"))
+        elif isinstance(mismatch_override_cfg, dict):
+            for key in ("enabled", "low_side_enabled", "high_side_enabled"):
+                raw = mismatch_override_cfg.get(key)
+                if raw is None:
+                    continue
+                if not isinstance(raw, bool):
+                    errors.append((f"{mismatch_override_path}.{key}", "must be a boolean"))
+
+            raw_penetration = mismatch_override_cfg.get("min_penetration")
+            if raw_penetration is not None:
+                try:
+                    penetration = float(raw_penetration)
+                except Exception:
+                    errors.append((f"{mismatch_override_path}.min_penetration", "must be a finite number"))
+                else:
+                    if not math.isfinite(penetration):
+                        errors.append((f"{mismatch_override_path}.min_penetration", "must be a finite number"))
+                    elif penetration < 0:
+                        errors.append((f"{mismatch_override_path}.min_penetration", "must be >= 0"))
+
     return errors
 
 

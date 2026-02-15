@@ -87,6 +87,7 @@ from .indicator_validator import IndicatorValidator
 from core.rsi_zone_router import (
     build_rsi_zone_snapshot,
     is_strategy_allowed as is_rsi_strategy_allowed,
+    snapshot_log_context as rsi_snapshot_log_context,
     snapshot_to_dict as rsi_snapshot_to_dict,
 )
 from core.level_zone_router import (
@@ -255,6 +256,32 @@ class ProductionCoordinator:
             return str(value or "").strip().lower()
         except Exception:
             return ""
+
+    @staticmethod
+    def _emit_rsi_router_decision_log(
+        *,
+        scope_label: str,
+        symbol: Any,
+        strategy_name: Any,
+        reason_code: Optional[str],
+        rsi_zone_snapshot: Optional[Dict[str, Any]],
+    ) -> None:
+        snapshot = rsi_zone_snapshot if isinstance(rsi_zone_snapshot, dict) else {}
+        log_ctx = rsi_snapshot_log_context(snapshot)
+        logger.info(
+            "%s | symbol=%s | strategy=%s | reason=%s | zone=%s | rsi_level=%s | rsi_slow=%s | rsi_fast=%s | ob_threshold=%s | str_threshold=%s | consensus_status=%s",
+            str(scope_label or "[RSI-ROUTER]"),
+            str(symbol or ""),
+            str(strategy_name or ""),
+            str(reason_code or ""),
+            snapshot.get("zone"),
+            log_ctx.get("rsi_level"),
+            log_ctx.get("rsi_slow"),
+            log_ctx.get("rsi_fast"),
+            log_ctx.get("ob_threshold"),
+            log_ctx.get("str_threshold"),
+            log_ctx.get("consensus_status"),
+        )
 
     def _emit_level_router_decision(
         self,
@@ -1630,12 +1657,12 @@ class ProductionCoordinator:
                             rsi_router_cfg,
                         )
                         if not allowed:
-                            logger.info(
-                                "[RSI-ROUTER] Skip | symbol=%s | strategy=%s | reason=%s | zone=%s",
-                                symbol,
-                                gate_strategy_name,
-                                reason_code,
-                                rsi_zone_snapshot.get("zone"),
+                            self._emit_rsi_router_decision_log(
+                                scope_label="[RSI-ROUTER] Skip",
+                                symbol=symbol,
+                                strategy_name=gate_strategy_name,
+                                reason_code=reason_code,
+                                rsi_zone_snapshot=rsi_zone_snapshot,
                             )
                             continue
                     if level_router_enabled and level_zone_snapshot is not None:
@@ -2783,12 +2810,12 @@ class ProductionCoordinator:
                         rsi_router_cfg,
                     )
                     if not allowed:
-                        logger.info(
-                            "[RSI-ROUTER] Recheck blocked | symbol=%s | strategy=%s | reason=%s | zone=%s",
-                            symbol,
-                            gate_strategy_name,
-                            reason_code,
-                            rsi_zone_snapshot.get("zone"),
+                        self._emit_rsi_router_decision_log(
+                            scope_label="[RSI-ROUTER] Recheck blocked",
+                            symbol=symbol,
+                            strategy_name=gate_strategy_name,
+                            reason_code=reason_code,
+                            rsi_zone_snapshot=rsi_zone_snapshot,
                         )
                         outcome = "no_signal"
                         final_reason = str(reason_code or "rsi_router.zone_mismatch")

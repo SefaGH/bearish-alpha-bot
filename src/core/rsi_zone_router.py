@@ -211,6 +211,50 @@ def _zone_group(zone: RsiZone) -> str:
     return "transition"
 
 
+def _resolve_mismatch_extreme_override(
+    *,
+    rsi_slow: float,
+    ob_threshold: float,
+    str_threshold: float,
+    transition_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    mismatch_cfg = (
+        transition_cfg.get("mismatch_extreme_override", {})
+        if isinstance(transition_cfg.get("mismatch_extreme_override"), dict)
+        else {}
+    )
+
+    enabled = bool(mismatch_cfg.get("enabled", False))
+    low_side_enabled = bool(mismatch_cfg.get("low_side_enabled", True))
+    high_side_enabled = bool(mismatch_cfg.get("high_side_enabled", False))
+    raw_pen = _coerce_finite_float(mismatch_cfg.get("min_penetration"))
+    min_penetration = 0.0 if raw_pen is None or raw_pen < 0 else float(raw_pen)
+
+    low_trigger = bool(low_side_enabled and float(rsi_slow) <= (float(ob_threshold) - min_penetration))
+    high_trigger = bool(high_side_enabled and float(rsi_slow) >= (float(str_threshold) + min_penetration))
+
+    applied_side: Optional[str] = None
+    if enabled:
+        if low_trigger and high_trigger:
+            low_distance = float(ob_threshold) - float(rsi_slow)
+            high_distance = float(rsi_slow) - float(str_threshold)
+            applied_side = "low" if low_distance >= high_distance else "high"
+        elif low_trigger:
+            applied_side = "low"
+        elif high_trigger:
+            applied_side = "high"
+
+    return {
+        "enabled": bool(enabled),
+        "low_side_enabled": bool(low_side_enabled),
+        "high_side_enabled": bool(high_side_enabled),
+        "min_penetration": float(min_penetration),
+        "low_trigger": bool(low_trigger),
+        "high_trigger": bool(high_trigger),
+        "applied_side": applied_side,
+    }
+
+
 def resolve_zone(
     *,
     symbol: str,
@@ -231,6 +275,12 @@ def resolve_zone(
 
     ob_threshold = float(thresholds.get("ob_threshold", 35.0))
     str_threshold = float(thresholds.get("str_threshold", 65.0))
+    mismatch_override = _resolve_mismatch_extreme_override(
+        rsi_slow=float(rsi_slow),
+        ob_threshold=float(ob_threshold),
+        str_threshold=float(str_threshold),
+        transition_cfg=transition_cfg,
+    )
     slow_zone = _classify_zone(
         rsi=float(rsi_slow),
         ob_threshold=ob_threshold,
@@ -254,20 +304,35 @@ def resolve_zone(
             chosen_zone = slow_zone
             consensus_status = "aligned"
         else:
-            consensus_status = "mismatch_transition"
-            if float(rsi_slow) < ob_threshold + width:
-                chosen_zone = RsiZone.TRANSITION_LOW
-            elif float(rsi_slow) > str_threshold - width:
-                chosen_zone = RsiZone.TRANSITION_HIGH
+            applied_side = mismatch_override.get("applied_side")
+            if applied_side == "low":
+                chosen_zone = RsiZone.OVERSOLD
+                consensus_status = "mismatch_extreme_override_low"
+            elif applied_side == "high":
+                chosen_zone = RsiZone.OVERBOUGHT
+                consensus_status = "mismatch_extreme_override_high"
             else:
-                mid = (ob_threshold + str_threshold) / 2.0
-                chosen_zone = RsiZone.TRANSITION_LOW if float(rsi_slow) <= mid else RsiZone.TRANSITION_HIGH
+                consensus_status = "mismatch_transition"
+                if float(rsi_slow) < ob_threshold + width:
+                    chosen_zone = RsiZone.TRANSITION_LOW
+                elif float(rsi_slow) > str_threshold - width:
+                    chosen_zone = RsiZone.TRANSITION_HIGH
+                else:
+                    mid = (ob_threshold + str_threshold) / 2.0
+                    chosen_zone = RsiZone.TRANSITION_LOW if float(rsi_slow) <= mid else RsiZone.TRANSITION_HIGH
 
     meta = {
         "slow_zone": slow_zone.value,
         "fast_zone": fast_zone.value if isinstance(fast_zone, RsiZone) else None,
         "consensus_status": consensus_status,
         "min_gap_applied": bool(thresholds.get("min_gap_applied", False)),
+        "mismatch_override_enabled": bool(mismatch_override.get("enabled", False)),
+        "mismatch_override_low_side_enabled": bool(mismatch_override.get("low_side_enabled", False)),
+        "mismatch_override_high_side_enabled": bool(mismatch_override.get("high_side_enabled", False)),
+        "mismatch_override_min_penetration": float(mismatch_override.get("min_penetration", 0.0)),
+        "mismatch_override_applied_side": mismatch_override.get("applied_side"),
+        "mismatch_override_low_trigger": bool(mismatch_override.get("low_trigger", False)),
+        "mismatch_override_high_trigger": bool(mismatch_override.get("high_trigger", False)),
     }
     return RsiZoneSnapshot(
         symbol=str(symbol),
@@ -327,6 +392,50 @@ def snapshot_to_dict(snapshot: Optional[RsiZoneSnapshot]) -> Optional[Dict[str, 
     out = asdict(snapshot)
     out["zone"] = snapshot.zone.value
     return out
+
+
+def _format_float_for_log(value: Any) -> Optional[str]:
+    parsed = _coerce_finite_float(value)
+    if parsed is None:
+        return None
+    return f"{float(parsed):.2f}"
+
+
+def snapshot_log_context(snapshot: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    if isinstance(snapshot, RsiZoneSnapshot):
+        as_payload = snapshot_to_dict(snapshot)
+        if isinstance(as_payload, dict):
+            payload = as_payload
+    elif isinstance(snapshot, dict):
+        payload = snapshot
+
+    meta = payload.get("meta", {}) if isinstance(payload.get("meta"), dict) else {}
+    rsi_slow = _coerce_finite_float(payload.get("rsi_slow"))
+
+    consensus_status = ""
+    raw_consensus = meta.get("consensus_status")
+    try:
+        if raw_consensus is not None:
+            consensus_status = str(raw_consensus).strip()
+    except Exception:
+        consensus_status = ""
+    if not consensus_status:
+        try:
+            mode = str(payload.get("mode") or "").strip().lower()
+        except Exception:
+            mode = ""
+        if mode == "slow_only":
+            consensus_status = "slow_only"
+
+    return {
+        "rsi_level": _format_float_for_log(rsi_slow),
+        "rsi_slow": _format_float_for_log(rsi_slow),
+        "rsi_fast": _format_float_for_log(payload.get("rsi_fast")),
+        "ob_threshold": _format_float_for_log(payload.get("ob_threshold")),
+        "str_threshold": _format_float_for_log(payload.get("str_threshold")),
+        "consensus_status": consensus_status or None,
+    }
 
 
 def _extract_zone(snapshot: Any) -> Optional[str]:
@@ -396,4 +505,3 @@ def is_strategy_allowed(
         return True, "rsi_router.allowed"
 
     return True, "rsi_router.strategy_unknown_allow"
-

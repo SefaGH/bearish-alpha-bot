@@ -884,6 +884,11 @@ strategies:
     transition:
       width: 5.0                      # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__WIDTH
       no_trade_new_entry: true        # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__NO_TRADE_NEW_ENTRY
+      mismatch_extreme_override:
+        enabled: false                # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__ENABLED
+        low_side_enabled: true        # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__LOW_SIDE_ENABLED
+        high_side_enabled: false      # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__HIGH_SIDE_ENABLED
+        min_penetration: 0.0          # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__MIN_PENETRATION
     soft_deferral:
       cancel_on_zone_mismatch: true   # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOFT_DEFERRAL__CANCEL_ON_ZONE_MISMATCH
     telemetry:

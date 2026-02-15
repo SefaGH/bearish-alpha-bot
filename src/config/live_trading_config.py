@@ -178,6 +178,11 @@ class LiveTradingConfiguration:
     DEPRECATED_LEGACY_KEYS = {
         'ml_rl_training_mode': 'ml.reinforcement_learning.training_mode',
     }
+    ROLLOUT_CANARY_PATHS = (
+        'strategies.level_zone_router.rollout.canary_symbols',
+        'signals.directional_bias.rollout.canary_symbols',
+        'strategies.mean_reversion.fast_watch.promote_override.canary_symbols',
+    )
 
     # ------------------------------------------------------------------
     # Azure App Configuration compatibility (strict-schema safe)
@@ -314,6 +319,7 @@ class LiveTradingConfiguration:
         merged = self._deep_merge(yaml_config, env_overrides)
         if appconfig_overrides:
             merged = self._deep_merge(merged, appconfig_overrides)
+        self._normalize_rollout_canary_symbols(merged)
 
         canonical_schema = self._build_type_schema(yaml_config)
         operational_schema = self._build_operational_schema()
@@ -350,6 +356,7 @@ class LiveTradingConfiguration:
                 "pydantic" if PYDANTIC_AVAILABLE else "fallback",
             )
         except (ConfigSafetyError, ValidationError, ValueError) as e:
+            canary_debug = self._collect_rollout_canary_debug(config)
             print("\n" + "=" * 60)
             print("?? KRITIK KONFIGURASYON HATASI (BOT BASLATILAMADI)")
             print("=" * 60)
@@ -366,6 +373,10 @@ class LiveTradingConfiguration:
             else:
                 print(str(e))
 
+            if canary_debug:
+                print("? DEBUG CANARY PATHLARI:")
+                for path, value in canary_debug:
+                    print(f"  - {path}: type={type(value).__name__} value={value!r}")
             print("=" * 60 + "\n")
             # Fail-fast: do not continue with a possibly unsafe config.
             sys.exit(1)
@@ -1454,6 +1465,117 @@ class LiveTradingConfiguration:
     def _normalize_symbol(symbol: str) -> str:
         cleaned = symbol.strip()
         return cleaned.upper() if cleaned else ''
+
+    @staticmethod
+    def _normalize_canary_symbol_token(token: Any) -> Optional[str]:
+        if isinstance(token, str):
+            out = token.strip()
+            if out.startswith("- "):
+                out = out[2:].strip()
+            if (
+                (out.startswith('"') and out.endswith('"'))
+                or (out.startswith("'") and out.endswith("'"))
+            ):
+                out = out[1:-1].strip()
+            return out if out else None
+        if isinstance(token, dict) and len(token) == 1:
+            key, value = next(iter(token.items()))
+            key_str = str(key).strip() if key is not None else ""
+            if not key_str:
+                return None
+            if value is None:
+                return key_str
+            value_str = str(value).strip()
+            if not value_str:
+                return key_str
+            if ":" in key_str:
+                return key_str
+            if "/" in key_str:
+                return f"{key_str}:{value_str}"
+        return None
+
+    @classmethod
+    def _normalize_canary_symbols_value(cls, value: Any, *, path: str) -> List[str]:
+        tokens: List[str] = []
+
+        def _walk(obj: Any) -> None:
+            if obj is None:
+                return
+            if isinstance(obj, str):
+                trimmed = obj.strip()
+                if not trimmed:
+                    return
+                if trimmed.startswith('[') or trimmed.startswith('{'):
+                    parsed = cls._parse_structured_value(trimmed, path, warn=False)
+                    if isinstance(parsed, (list, tuple, set, dict)):
+                        _walk(parsed)
+                        return
+                for part in trimmed.split(','):
+                    normalized = cls._normalize_canary_symbol_token(part)
+                    if normalized:
+                        tokens.append(normalized)
+                return
+            if isinstance(obj, (list, tuple, set)):
+                for item in obj:
+                    _walk(item)
+                return
+            if isinstance(obj, dict):
+                if obj and all(str(k).strip().isdigit() for k in obj.keys()):
+                    try:
+                        sorted_items = sorted(obj.items(), key=lambda kv: int(str(kv[0]).strip()))
+                    except Exception:
+                        sorted_items = list(obj.items())
+                    for _, item in sorted_items:
+                        _walk(item)
+                    return
+                for key, val in obj.items():
+                    normalized = cls._normalize_canary_symbol_token({key: val})
+                    if normalized:
+                        tokens.append(normalized)
+                return
+
+            normalized = cls._normalize_canary_symbol_token(obj)
+            if normalized:
+                tokens.append(normalized)
+
+        _walk(value)
+        out: List[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            token_clean = token.strip()
+            if not token_clean:
+                continue
+            if token_clean not in seen:
+                seen.add(token_clean)
+                out.append(token_clean)
+        return out
+
+    def _normalize_rollout_canary_symbols(self, config: Dict[str, Any]) -> None:
+        for dotted_path in self.ROLLOUT_CANARY_PATHS:
+            path = dotted_path.split('.')
+            current_value = self._get_nested_value(config, path)
+            if current_value is _MISSING or current_value is None:
+                continue
+            normalized = self._normalize_canary_symbols_value(current_value, path=dotted_path)
+            if not normalized:
+                continue
+            if current_value != normalized:
+                logger.warning(
+                    "?? [CONFIG-NORMALIZE] Coerced %s from %s to list[str]: %r -> %r",
+                    dotted_path,
+                    type(current_value).__name__,
+                    current_value,
+                    normalized,
+                )
+                self._set_nested_value(config, path, normalized)
+
+    def _collect_rollout_canary_debug(self, config: Dict[str, Any]) -> List[Tuple[str, Any]]:
+        out: List[Tuple[str, Any]] = []
+        for dotted_path in self.ROLLOUT_CANARY_PATHS:
+            value = self._get_nested_value(config, dotted_path.split('.'))
+            if value is not _MISSING:
+                out.append((dotted_path, value))
+        return out
 
     def _normalize_risk_config(self, config: Dict[str, Any]) -> None:
         """Ensure risk percentages stay in fractional form and derive USD helpers."""

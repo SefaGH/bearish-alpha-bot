@@ -328,3 +328,45 @@ def test_unknown_appconfig_key_strict_raises(monkeypatch):
 
     with pytest.raises(ValueError):
         cfg._warn_unknown_appconfig_keys(canonical, operational)
+
+
+def test_normalize_rollout_canary_symbols_repairs_mapping_tokens():
+    cfg = {
+        "strategies": {
+            "level_zone_router": {
+                "rollout": {
+                    "canary_symbols": [{"BTC/USDT": "USDT"}],
+                }
+            }
+        },
+        "signals": {
+            "directional_bias": {
+                "rollout": {
+                    "canary_symbols": '[{"BTC/USDT":"USDT"}]',
+                }
+            }
+        },
+    }
+
+    loader = LiveTradingConfiguration()
+    loader._normalize_rollout_canary_symbols(cfg)
+
+    assert cfg["strategies"]["level_zone_router"]["rollout"]["canary_symbols"] == ["BTC/USDT:USDT"]
+    assert cfg["signals"]["directional_bias"]["rollout"]["canary_symbols"] == ["BTC/USDT:USDT"]
+
+
+def test_normalize_rollout_canary_symbols_repairs_indexed_dict_shape():
+    cfg = {
+        "strategies": {
+            "level_zone_router": {
+                "rollout": {
+                    "canary_symbols": {"0": {"BTC/USDT": "USDT"}},
+                }
+            }
+        }
+    }
+
+    loader = LiveTradingConfiguration()
+    loader._normalize_rollout_canary_symbols(cfg)
+
+    assert cfg["strategies"]["level_zone_router"]["rollout"]["canary_symbols"] == ["BTC/USDT:USDT"]
