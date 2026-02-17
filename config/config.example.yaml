@@ -873,6 +873,7 @@ strategies:
     enabled: true                     # Override with: STRATEGIES__RSI_ZONE_ROUTER__ENABLED
     source:
       mode: "consensus"               # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOURCE__MODE ; slow_only | consensus
+      mr_mode: "slow_only"            # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOURCE__MR_MODE ; slow_only | follow_source
       slow_tf: "30m"                  # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOURCE__SLOW_TF
       fast_tf: "5m"                   # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOURCE__FAST_TF
     thresholds:
@@ -885,10 +886,10 @@ strategies:
       width: 5.0                      # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__WIDTH
       no_trade_new_entry: true        # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__NO_TRADE_NEW_ENTRY
       mismatch_extreme_override:
-        enabled: false                # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__ENABLED
+        enabled: true                 # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__ENABLED
         low_side_enabled: true        # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__LOW_SIDE_ENABLED
         high_side_enabled: false      # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__HIGH_SIDE_ENABLED
-        min_penetration: 0.0          # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__MIN_PENETRATION
+        min_penetration: 2.0          # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__MIN_PENETRATION
     soft_deferral:
       cancel_on_zone_mismatch: true   # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOFT_DEFERRAL__CANCEL_ON_ZONE_MISMATCH
     telemetry:

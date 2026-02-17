@@ -1,4 +1,4 @@
-from core.rsi_zone_router import RsiZone, RsiZoneSnapshot, resolve_zone, snapshot_log_context
+from core.rsi_zone_router import RsiZone, RsiZoneSnapshot, is_strategy_allowed, resolve_zone, snapshot_log_context
 
 
 def _thresholds() -> dict:
@@ -179,3 +179,100 @@ def test_resolve_zone_mismatch_high_override_applies_when_enabled():
     assert out.meta["consensus_status"] == "mismatch_extreme_override_high"
     assert out.meta["mismatch_override_applied_side"] == "high"
     assert out.meta["mismatch_override_high_trigger"] is True
+
+
+def test_is_strategy_allowed_mr_allows_between_ob_and_str_thresholds():
+    snapshot = {
+        "zone": RsiZone.TRANSITION_HIGH.value,
+        "rsi_slow": 54.2,
+        "ob_threshold": 32.0,
+        "str_threshold": 55.0,
+        "meta": {"slow_zone": RsiZone.TRANSITION_HIGH.value},
+    }
+    cfg = {
+        "enabled": True,
+        "source": {"mode": "consensus", "mr_mode": "follow_source"},
+        "transition": {"no_trade_new_entry": True},
+    }
+
+    allowed, reason = is_strategy_allowed("mean_reversion", "long", snapshot, cfg)
+
+    assert allowed is True
+    assert reason == "rsi_router.allowed"
+
+
+def test_is_strategy_allowed_ob_still_uses_consensus_zone():
+    snapshot = {
+        "zone": RsiZone.TRANSITION_LOW.value,
+        "rsi_slow": 40.0,
+        "ob_threshold": 32.0,
+        "str_threshold": 55.0,
+        "meta": {"slow_zone": RsiZone.MR.value},
+    }
+    cfg = {
+        "enabled": True,
+        "source": {"mode": "consensus", "mr_mode": "slow_only"},
+        "transition": {"no_trade_new_entry": True},
+    }
+
+    allowed, reason = is_strategy_allowed("adaptive_ob", "long", snapshot, cfg)
+
+    assert allowed is False
+    assert reason == "rsi_router.transition_no_trade"
+
+
+def test_is_strategy_allowed_mr_blocks_when_rsi_at_or_above_str_threshold():
+    snapshot = {
+        "zone": RsiZone.OVERBOUGHT.value,
+        "rsi_slow": 58.0,
+        "ob_threshold": 32.0,
+        "str_threshold": 55.0,
+        "meta": {"slow_zone": RsiZone.OVERBOUGHT.value},
+    }
+    cfg = {
+        "enabled": True,
+        "source": {"mode": "consensus", "mr_mode": "follow_source"},
+        "transition": {"no_trade_new_entry": True},
+    }
+
+    allowed, reason = is_strategy_allowed("mean_reversion", "long", snapshot, cfg)
+
+    assert allowed is False
+    assert reason == "rsi_router.zone_mismatch"
+
+
+def test_is_strategy_allowed_mr_blocks_when_rsi_at_or_below_ob_threshold():
+    snapshot = {
+        "zone": RsiZone.OVERSOLD.value,
+        "rsi_slow": 31.5,
+        "ob_threshold": 32.0,
+        "str_threshold": 55.0,
+        "meta": {"slow_zone": RsiZone.OVERSOLD.value},
+    }
+    cfg = {
+        "enabled": True,
+        "source": {"mode": "consensus", "mr_mode": "follow_source"},
+        "transition": {"no_trade_new_entry": True},
+    }
+
+    allowed, reason = is_strategy_allowed("mr", "long", snapshot, cfg)
+
+    assert allowed is False
+    assert reason == "rsi_router.zone_mismatch"
+
+
+def test_is_strategy_allowed_mr_falls_back_to_legacy_zone_when_thresholds_missing():
+    snapshot = {
+        "zone": RsiZone.TRANSITION_LOW.value,
+        "meta": {"slow_zone": RsiZone.MR.value},
+    }
+    cfg = {
+        "enabled": True,
+        "source": {"mode": "consensus"},
+        "transition": {"no_trade_new_entry": True},
+    }
+
+    allowed, reason = is_strategy_allowed("mr", "long", snapshot, cfg)
+
+    assert allowed is True
+    assert reason == "rsi_router.allowed"

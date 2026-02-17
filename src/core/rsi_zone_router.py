@@ -456,11 +456,52 @@ def _extract_zone(snapshot: Any) -> Optional[str]:
     return None
 
 
+def _extract_slow_zone(snapshot: Any) -> Optional[str]:
+    payload = _snapshot_payload(snapshot)
+    meta = payload.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("slow_zone")
+    try:
+        if raw is None:
+            return None
+        zone = str(raw).strip().upper()
+    except Exception:
+        return None
+    return zone or None
+
+
+def _snapshot_payload(snapshot: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    if isinstance(snapshot, RsiZoneSnapshot):
+        payload = snapshot_to_dict(snapshot) or {}
+    elif isinstance(snapshot, dict):
+        payload = snapshot
+    return payload if isinstance(payload, dict) else {}
+
+
+def _extract_snapshot_float(snapshot: Any, field: str) -> Optional[float]:
+    payload = _snapshot_payload(snapshot)
+    return _coerce_finite_float(payload.get(field))
+
+
 def _normalize_strategy_name(name: Any) -> str:
     try:
         return str(name or "").strip().lower()
     except Exception:
         return ""
+
+
+def _resolve_mr_mode(cfg: Dict[str, Any]) -> str:
+    source_cfg = cfg.get("source", {}) if isinstance(cfg.get("source"), dict) else {}
+    raw_mode = source_cfg.get("mr_mode", "slow_only")
+    try:
+        mode = str(raw_mode or "").strip().lower()
+    except Exception:
+        mode = ""
+    if mode in {"slow_only", "follow_source"}:
+        return mode
+    return "slow_only"
 
 
 def is_strategy_allowed(
@@ -475,19 +516,47 @@ def is_strategy_allowed(
     if not bool(cfg.get("enabled", False)):
         return True, "rsi_router.disabled"
 
+    normalized = _normalize_strategy_name(strategy_name)
+    ob_names = {"adaptive_ob", "oversold_bounce"}
+    str_names = {"adaptive_str", "short_the_rip", "adaptive_short_the_rip"}
+    mr_names = {"mean_reversion", "mr"}
+
     zone = _extract_zone(snapshot)
     if not zone:
         return True, "rsi_router.snapshot_missing"
 
     transition_cfg = cfg.get("transition", {}) if isinstance(cfg.get("transition"), dict) else {}
     no_trade_new_entry = bool(transition_cfg.get("no_trade_new_entry", True))
+
+    # MR should operate strictly between adaptive OB/STR levels.
+    if normalized in mr_names:
+        rsi_slow = _extract_snapshot_float(snapshot, "rsi_slow")
+        ob_threshold = _extract_snapshot_float(snapshot, "ob_threshold")
+        str_threshold = _extract_snapshot_float(snapshot, "str_threshold")
+        if (
+            rsi_slow is not None
+            and ob_threshold is not None
+            and str_threshold is not None
+            and float(ob_threshold) < float(str_threshold)
+        ):
+            if float(ob_threshold) < float(rsi_slow) < float(str_threshold):
+                return True, "rsi_router.allowed"
+            return False, "rsi_router.zone_mismatch"
+
+        # Fallback to legacy zone semantics when thresholds are unavailable.
+        effective_zone = zone
+        if _resolve_mr_mode(cfg) == "slow_only":
+            slow_zone = _extract_slow_zone(snapshot)
+            if slow_zone:
+                effective_zone = slow_zone
+        if no_trade_new_entry and effective_zone in {RsiZone.TRANSITION_LOW.value, RsiZone.TRANSITION_HIGH.value}:
+            return False, "rsi_router.transition_no_trade"
+        if effective_zone != RsiZone.MR.value:
+            return False, "rsi_router.zone_mismatch"
+        return True, "rsi_router.allowed"
+
     if no_trade_new_entry and zone in {RsiZone.TRANSITION_LOW.value, RsiZone.TRANSITION_HIGH.value}:
         return False, "rsi_router.transition_no_trade"
-
-    normalized = _normalize_strategy_name(strategy_name)
-    ob_names = {"adaptive_ob", "oversold_bounce"}
-    str_names = {"adaptive_str", "short_the_rip", "adaptive_short_the_rip"}
-    mr_names = {"mean_reversion", "mr"}
 
     if normalized in ob_names:
         if zone != RsiZone.OVERSOLD.value:
@@ -496,11 +565,6 @@ def is_strategy_allowed(
 
     if normalized in str_names:
         if zone != RsiZone.OVERBOUGHT.value:
-            return False, "rsi_router.zone_mismatch"
-        return True, "rsi_router.allowed"
-
-    if normalized in mr_names:
-        if zone != RsiZone.MR.value:
             return False, "rsi_router.zone_mismatch"
         return True, "rsi_router.allowed"
 

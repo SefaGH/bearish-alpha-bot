@@ -179,6 +179,21 @@ def _validate_rsi_zone_router(config_data: Dict[str, Any]) -> List[Tuple[str, st
                             f"invalid value '{mode}'; allowed: slow_only|consensus",
                         )
                     )
+        mr_mode = source_cfg.get("mr_mode")
+        if mr_mode is not None:
+            if not isinstance(mr_mode, str):
+                errors.append(
+                    ("strategies.rsi_zone_router.source.mr_mode", "must be one of: slow_only|follow_source")
+                )
+            else:
+                mr_mode_norm = mr_mode.strip().lower()
+                if mr_mode_norm not in {"slow_only", "follow_source"}:
+                    errors.append(
+                        (
+                            "strategies.rsi_zone_router.source.mr_mode",
+                            f"invalid value '{mr_mode}'; allowed: slow_only|follow_source",
+                        )
+                    )
 
     thresholds_cfg = router_cfg.get("thresholds")
     if thresholds_cfg is not None and not isinstance(thresholds_cfg, dict):

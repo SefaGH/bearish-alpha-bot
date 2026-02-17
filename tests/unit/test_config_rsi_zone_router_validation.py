@@ -13,7 +13,7 @@ def _base_config() -> dict:
         "strategies": {
             "rsi_zone_router": {
                 "enabled": True,
-                "source": {"mode": "consensus", "slow_tf": "30m", "fast_tf": "5m"},
+                "source": {"mode": "consensus", "mr_mode": "slow_only", "slow_tf": "30m", "fast_tf": "5m"},
                 "thresholds": {
                     "ob_floor": 10.0,
                     "ob_cap": 45.0,
@@ -83,3 +83,29 @@ def test_rsi_zone_router_validation_noop_when_router_block_missing():
     del cfg_no_router["strategies"]["rsi_zone_router"]
 
     validate_config_safety(cfg_no_router)
+
+
+@pytest.mark.parametrize("mr_mode", ["slow_only", "follow_source"])
+def test_rsi_zone_router_validation_accepts_mr_mode_values(mr_mode: str):
+    cfg = _base_config()
+    cfg["strategies"]["rsi_zone_router"]["source"]["mr_mode"] = mr_mode
+
+    validate_config_safety(cfg)
+
+
+def test_rsi_zone_router_validation_rejects_invalid_mr_mode():
+    cfg = _base_config()
+    cfg["strategies"]["rsi_zone_router"]["source"]["mr_mode"] = "invalid_mode"
+
+    with pytest.raises(ConfigSafetyError) as exc:
+        validate_config_safety(cfg)
+    assert "strategies.rsi_zone_router.source.mr_mode" in str(exc.value)
+
+
+def test_rsi_zone_router_validation_rejects_non_string_mr_mode():
+    cfg = _base_config()
+    cfg["strategies"]["rsi_zone_router"]["source"]["mr_mode"] = 123
+
+    with pytest.raises(ConfigSafetyError) as exc:
+        validate_config_safety(cfg)
+    assert "strategies.rsi_zone_router.source.mr_mode" in str(exc.value)
