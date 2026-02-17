@@ -758,6 +758,10 @@ class StrategyCoordinator:
         rl_cfg = (self.config.get('ml', {}) or {}).get('reinforcement_learning', {})
         self._rl_config = rl_cfg
         self.legacy_rl_enabled = bool(rl_cfg.get('legacy_dqn_enabled', False))
+        self.disable_legacy_rl_when_ppo_enabled = bool(
+            rl_cfg.get('disable_legacy_rl_when_ppo_enabled', True)
+        )
+        self._legacy_rl_suppressed_logged = False
         self.ppo_multipliers = {
             'rr_up_mult': float(rl_cfg.get('ppo_rr_up_mult', 1.3)),
             'rr_down_mult': float(rl_cfg.get('ppo_rr_down_mult', 0.9)),
@@ -7827,7 +7831,8 @@ class StrategyCoordinator:
             # --- 2. RL AGENT'IN AYRI OLARAK ÇAĞRILMASI VE KONTROLÜ ---
             rl_advice = None
             rl_meta: Optional[Dict[str, Any]] = None
-            if self.legacy_rl_enabled and hasattr(self, 'rl_agent') and self.rl_agent:
+            legacy_rl_runtime_enabled = self._is_legacy_rl_runtime_enabled()
+            if legacy_rl_runtime_enabled and hasattr(self, 'rl_agent') and self.rl_agent:
                 try:
                     if hasattr(self.rl_agent, 'set_inference_mode') and not getattr(self.rl_agent, '_inference_locked', False):
                         try:
@@ -7989,13 +7994,13 @@ class StrategyCoordinator:
                     logger.warning(f"RL recommendation failed: {e}", exc_info=True)
 
             # --- 3. Legacy RL disagreements now apply soft penalties only ---
-            if self.legacy_rl_enabled and rl_advice == 'hold':
+            if legacy_rl_runtime_enabled and rl_advice == 'hold':
                 logger.warning(f"🤖 [RL-HOLD] Agent advised HOLD for {symbol}; applying soft strength penalty.")
                 current_strength = signal.get('ml_strength', signal.get('strength', 0.5) or 0.5)
                 signal['ml_strength'] = max(0.05, current_strength * 0.7)
                 signal['rl_hold_recommendation'] = True
 
-            if self.legacy_rl_enabled:
+            if legacy_rl_runtime_enabled:
                 is_opposite = (
                     (original_side in ['buy', 'long'] and rl_advice in ['sell', 'short']) or
                     (original_side in ['sell', 'short'] and rl_advice in ['buy', 'long'])
@@ -9074,6 +9079,82 @@ class StrategyCoordinator:
 
         current_target = bucket.get('avg_target_rr', 0.0)
         bucket['avg_target_rr'] = current_target + (target_rr - current_target) / samples
+
+    def _is_legacy_rl_runtime_enabled(self) -> bool:
+        """Return whether legacy DQN path should be used in the current runtime."""
+        if not self.legacy_rl_enabled:
+            return False
+
+        rl_cfg = getattr(self, "_rl_config", {}) or {}
+        ppo_enabled = bool(rl_cfg.get("ppo_enabled", False))
+        disable_when_ppo = bool(
+            rl_cfg.get("disable_legacy_rl_when_ppo_enabled", self.disable_legacy_rl_when_ppo_enabled)
+        )
+
+        if ppo_enabled and disable_when_ppo:
+            if not self._legacy_rl_suppressed_logged:
+                logger.info(
+                    "ℹ️ [RL] Legacy DQN path suppressed because PPO is enabled "
+                    "(disable_legacy_rl_when_ppo_enabled=true)."
+                )
+                self._legacy_rl_suppressed_logged = True
+            return False
+        return True
+
+    def _derive_regime_weight_from_confidence(self, regime_confidence: float) -> float:
+        """Derive a soft regime weight from confidence using configured thresholds."""
+        hard_reject = 0.30
+        full_weight = 0.60
+
+        try:
+            ml_cfg = self.config.get("ml", {}) if isinstance(self.config, dict) else {}
+            regime_cfg = ml_cfg.get("regime_prediction") if isinstance(ml_cfg, dict) else None
+            if not isinstance(regime_cfg, dict) or not regime_cfg:
+                regime_cfg = ml_cfg.get("regime") if isinstance(ml_cfg, dict) else None
+            if isinstance(regime_cfg, dict):
+                hard_reject = float(regime_cfg.get("min_confidence_hard_reject", hard_reject))
+                full_weight = float(regime_cfg.get("min_confidence_full_weight", full_weight))
+        except Exception:
+            hard_reject = 0.30
+            full_weight = 0.60
+
+        if not math.isfinite(full_weight) or full_weight <= 0:
+            full_weight = 0.60
+
+        conf = max(0.0, min(1.0, float(regime_confidence)))
+        if conf < hard_reject:
+            return 0.0
+        if conf >= full_weight:
+            return 1.0
+        return max(0.0, min(1.0, conf / full_weight))
+
+    @staticmethod
+    def _is_ppo_rr_reason_inactive(reason: str) -> bool:
+        """Return True when PPO reason indicates fallback/inactive state."""
+        if not reason:
+            return False
+
+        normalized = reason.strip().lower()
+        known = {
+            "adapter_unavailable",
+            "disabled",
+            "unsupported_symbol",
+            "model_unavailable",
+            "stable_baselines3_not_installed",
+            "missing_state",
+            "health_guard",
+            "health_guard_fast",
+            "prediction_error",
+            "exception",
+            "vecnorm_missing",
+        }
+        if normalized in known:
+            return True
+        if normalized.startswith(("spec_load_failed", "scaler_init_failed", "model_load_failed", "missing_")):
+            return True
+        if "unavailable" in normalized or "failed" in normalized:
+            return True
+        return False
     
     async def _enrich_signal_for_dynamic_rr(self, signal: Dict) -> Dict:
         """
@@ -9094,57 +9175,120 @@ class StrategyCoordinator:
         
         # 1. ML Metrics
         try:
-            if hasattr(self, 'ml_integration') and self.ml_integration:
+            def _safe_float(value: Any, default: float) -> float:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return default
+
+            def _safe_float_optional(value: Any) -> Optional[float]:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+
+            def _normalize_regime_name(value: Any) -> str:
+                if isinstance(value, dict):
+                    return str(value.get('predicted_regime') or value.get('regime') or 'neutral')
+                return str(value or 'neutral')
+
+            has_regime_signal = signal.get('regime_name') is not None and signal.get('regime_confidence') is not None
+            has_ml_conf_signal = signal.get('ml_confidence') is not None
+            needs_ml_context = not (has_regime_signal and has_ml_conf_signal)
+
+            ml_context = None
+            if hasattr(self, 'ml_integration') and self.ml_integration and needs_ml_context:
                 ml_context = await self.ml_integration.get_ml_context(symbol)
+
+            if signal.get('ml_confidence') is None:
                 if ml_context:
-                    # Use actual ML values
-                    signal['ml_confidence'] = float(ml_context.get('consensus_score', 0.5))
-                    signal['regime_name'] = str(ml_context.get('regime', 'neutral'))
-                    signal['regime_confidence'] = float(ml_context.get('regime_confidence', 0.3))
-                    quality_score = float(ml_context.get('quality_score', 0.0) or 0.0)
-                    if quality_score > 1:
-                        quality_score /= 100.0
-                    ml_quality = max(0.0, min(1.0, quality_score))
-                    signal['ml_quality_score'] = ml_quality
-                    if 'quality_score' not in signal:
-                        signal['quality_score'] = ml_quality
-                    logger.debug(
-                        "✅ ML metrics added: conf=%.2f | quality=%.2f",
-                        signal['ml_confidence'],
-                        signal.get('quality_score', 0.0),
-                    )
+                    signal['ml_confidence'] = _safe_float(ml_context.get('consensus_score'), 0.5)
                 else:
-                    # No ML context, use explicit fallbacks
                     signal['ml_confidence'] = 0.5
-                    signal['regime_name'] = 'neutral'
-                    signal['regime_confidence'] = 0.3
-                    signal['ml_quality_score'] = 0.0
-                    if 'quality_score' not in signal:
-                        signal['quality_score'] = 0.0
-                    logger.debug("⚠️ Using ML fallback values")
+
+            regime_name_raw = signal.get('regime_name')
+            regime_confidence = _safe_float_optional(signal.get('regime_confidence'))
+            regime_weight = _safe_float_optional(signal.get('regime_weight')) if signal.get('regime_weight') is not None else None
+            regime_source = "signal"
+
+            if (regime_name_raw is None or regime_confidence is None) and ml_context:
+                regime_raw = ml_context.get('regime')
+                if isinstance(regime_raw, dict):
+                    if regime_name_raw is None:
+                        regime_name_raw = (
+                            regime_raw.get('predicted_regime')
+                            or regime_raw.get('regime')
+                            or ml_context.get('regime_name')
+                        )
+                    if regime_confidence is None:
+                        regime_confidence = _safe_float_optional(regime_raw.get('confidence'))
+                    if regime_weight is None and regime_raw.get('regime_weight') is not None:
+                        regime_weight = _safe_float_optional(regime_raw.get('regime_weight'))
+                else:
+                    if regime_name_raw is None:
+                        regime_name_raw = regime_raw or ml_context.get('regime_name')
+
+                if regime_confidence is None:
+                    regime_confidence = _safe_float_optional(ml_context.get('regime_confidence'))
+                regime_source = "ml_context"
+
+            if regime_name_raw is None:
+                regime_name_raw = 'neutral'
+                regime_source = "fallback"
+            if regime_confidence is None:
+                regime_confidence = 0.3
+                if regime_source != "ml_context":
+                    regime_source = "fallback"
+
+            signal['regime_name'] = _normalize_regime_name(regime_name_raw)
+            signal['regime_confidence'] = max(0.0, min(1.0, float(regime_confidence)))
+            if regime_weight is not None:
+                signal['regime_weight'] = max(0.0, min(1.0, float(regime_weight)))
             else:
-                signal['ml_confidence'] = 0.5
-                signal['regime_name'] = 'neutral'
-                signal['regime_confidence'] = 0.3
-                signal['ml_quality_score'] = signal.get('ml_quality_score', 0.0)
-                if 'quality_score' not in signal:
-                    signal['quality_score'] = signal.get('ml_quality_score', 0.0)
+                signal['regime_weight'] = self._derive_regime_weight_from_confidence(signal['regime_confidence'])
+            signal['regime_context_source'] = regime_source
+
+            if ml_context:
+                quality_score = _safe_float(ml_context.get('quality_score', 0.0), 0.0)
+                if quality_score > 1:
+                    quality_score /= 100.0
+                signal['ml_quality_score'] = max(0.0, min(1.0, quality_score))
+            else:
+                signal['ml_quality_score'] = max(
+                    0.0,
+                    min(1.0, _safe_float(signal.get('ml_quality_score'), 0.0)),
+                )
+            if 'quality_score' not in signal:
+                signal['quality_score'] = signal['ml_quality_score']
+
+            logger.debug(
+                "✅ ML metrics added: conf=%.2f | regime=%s (%.2f, w=%.2f src=%s) | quality=%.2f",
+                signal['ml_confidence'],
+                signal['regime_name'],
+                signal['regime_confidence'],
+                signal.get('regime_weight', 0.0),
+                signal.get('regime_context_source', 'unknown'),
+                signal.get('quality_score', 0.0),
+            )
         except Exception as e:
             logger.debug(f"ML enrichment error: {e}")
             signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3})
+            signal.setdefault('regime_weight', self._derive_regime_weight_from_confidence(signal['regime_confidence']))
+            signal['regime_context_source'] = 'fallback'
             signal['ml_quality_score'] = signal.get('ml_quality_score', 0.0)
             if 'quality_score' not in signal:
                 signal['quality_score'] = 0.0
-        
+
         # 2. RL/PPO Metrics
         try:
             side = (signal.get('side') or '').lower()
+            legacy_rl_runtime_enabled = self._is_legacy_rl_runtime_enabled()
             if side in ('buy', 'long') and 'ppo_long_score' in signal:
                 score = float(signal.get('ppo_long_score', self.ppo_fallback_score))
                 signal['rl_is_agree'] = score >= 0.5
                 signal['rl_action_prob'] = score
                 logger.debug(f"✅ PPO metrics: long_score={score:.2f}")
-            elif self.legacy_rl_enabled and hasattr(self, '_last_rl_decision') and self._last_rl_decision:
+            elif legacy_rl_runtime_enabled and hasattr(self, '_last_rl_decision') and self._last_rl_decision:
                 rl_action = self._last_rl_decision.get('action', 'hold')
                 rl_confidence = float(self._last_rl_decision.get('confidence', 0.5))
                 signal_side = signal.get('side', '').lower()
@@ -9277,9 +9421,22 @@ class StrategyCoordinator:
         ppo_rr_multiplier = 1.0
         if side in ('buy', 'long') and 'ppo_long_score' in signal:
             score = float(signal['ppo_long_score'])
-            ppo_rr_multiplier = (
-                self.ppo_multipliers['rr_up_mult'] if score < 0.5 else self.ppo_multipliers['rr_down_mult']
-            )
+            ppo_meta = signal.get('ppo_meta') if isinstance(signal.get('ppo_meta'), dict) else {}
+            ppo_reason = str(ppo_meta.get('reason', '') or '').strip().lower()
+            guard_active = bool(ppo_meta.get('guard_active', False))
+
+            if guard_active or self._is_ppo_rr_reason_inactive(ppo_reason):
+                ppo_rr_multiplier = 1.0
+                logger.debug(
+                    "⚠️ [PPO-RR] Skipping RR multiplier for %s due to inactive PPO reason=%s guard=%s",
+                    symbol,
+                    ppo_reason or "n/a",
+                    guard_active,
+                )
+            else:
+                ppo_rr_multiplier = (
+                    self.ppo_multipliers['rr_up_mult'] if score < 0.5 else self.ppo_multipliers['rr_down_mult']
+                )
         signal['ppo_rr_multiplier'] = ppo_rr_multiplier
 
         signal = self._apply_regime_route_hint(signal)

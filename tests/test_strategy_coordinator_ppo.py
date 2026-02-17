@@ -1,6 +1,7 @@
 from typing import Any, Dict, cast
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from core.strategy_coordinator import StrategyCoordinator  # type: ignore
 
@@ -105,3 +106,148 @@ async def test_apply_ppo_long_filter_triggers_lazy_initialization(monkeypatch):
     assert 'ppo_lookback_meta' in signal
     lookback_meta = cast(Dict[str, Any], signal['ppo_lookback_meta'])
     assert lookback_meta['overall']['price_change_pct'] == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
+async def test_enrich_signal_for_dynamic_rr_extracts_regime_fields_from_dict():
+    cfg = {
+        'ml': {
+            'reinforcement_learning': {
+                'ppo_enabled': True,
+            },
+            'regime_prediction': {
+                'min_confidence_hard_reject': 0.30,
+                'min_confidence_full_weight': 0.60,
+            },
+        }
+    }
+    coordinator = StrategyCoordinator(
+        portfolio_manager=_DummyPortfolioManager(),
+        risk_manager=_DummyRiskManager(),
+        market_data_pipeline=None,
+        config=cfg,
+    )
+    coordinator.ml_integration = MagicMock()
+    coordinator.ml_integration.get_ml_context = AsyncMock(
+        return_value={
+            "consensus_score": 0.5,
+            "regime": {"predicted_regime": "bearish", "confidence": 0.186},
+            "quality_score": 0.4,
+        }
+    )
+
+    enriched = await coordinator._enrich_signal_for_dynamic_rr(
+        {"side": "buy", "symbol": "BTC/USDT:USDT"}
+    )
+
+    assert enriched["regime_name"] == "bearish"
+    assert enriched["regime_confidence"] == pytest.approx(0.186)
+    assert enriched["regime_weight"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_enrich_signal_for_dynamic_rr_skips_multiplier_when_ppo_inactive():
+    coordinator = StrategyCoordinator(
+        portfolio_manager=_DummyPortfolioManager(),
+        risk_manager=_DummyRiskManager(),
+        market_data_pipeline=None,
+        config={"ml": {"reinforcement_learning": {"ppo_enabled": True}}},
+    )
+
+    enriched = await coordinator._enrich_signal_for_dynamic_rr(
+        {
+            "side": "buy",
+            "symbol": "BTC/USDT:USDT",
+            "ppo_long_score": 0.0,
+            "ppo_meta": {"reason": "health_guard_fast", "guard_active": True},
+        }
+    )
+
+    assert enriched["ppo_rr_multiplier"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_enrich_signal_for_dynamic_rr_suppresses_legacy_rl_when_ppo_enabled():
+    coordinator = StrategyCoordinator(
+        portfolio_manager=_DummyPortfolioManager(),
+        risk_manager=_DummyRiskManager(),
+        market_data_pipeline=None,
+        config={
+            "ml": {
+                "reinforcement_learning": {
+                    "legacy_dqn_enabled": True,
+                    "ppo_enabled": True,
+                    "disable_legacy_rl_when_ppo_enabled": True,
+                }
+            }
+        },
+    )
+    coordinator._last_rl_decision = {"action": "BUY", "confidence": 0.99}
+
+    enriched = await coordinator._enrich_signal_for_dynamic_rr(
+        {"side": "buy", "symbol": "BTC/USDT:USDT"}
+    )
+
+    assert enriched["rl_is_agree"] is False
+    assert enriched["rl_action_prob"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_enrich_signal_for_dynamic_rr_uses_legacy_rl_when_guard_disabled():
+    coordinator = StrategyCoordinator(
+        portfolio_manager=_DummyPortfolioManager(),
+        risk_manager=_DummyRiskManager(),
+        market_data_pipeline=None,
+        config={
+            "ml": {
+                "reinforcement_learning": {
+                    "legacy_dqn_enabled": True,
+                    "ppo_enabled": True,
+                    "disable_legacy_rl_when_ppo_enabled": False,
+                }
+            }
+        },
+    )
+    coordinator._last_rl_decision = {"action": "BUY", "confidence": 0.88}
+
+    enriched = await coordinator._enrich_signal_for_dynamic_rr(
+        {"side": "buy", "symbol": "BTC/USDT:USDT"}
+    )
+
+    assert enriched["rl_is_agree"] is True
+    assert enriched["rl_action_prob"] == pytest.approx(0.88)
+
+
+@pytest.mark.asyncio
+async def test_enrich_signal_for_dynamic_rr_keeps_existing_regime_signal_and_skips_refetch():
+    coordinator = StrategyCoordinator(
+        portfolio_manager=_DummyPortfolioManager(),
+        risk_manager=_DummyRiskManager(),
+        market_data_pipeline=None,
+        config={"ml": {"reinforcement_learning": {"ppo_enabled": True}}},
+    )
+    coordinator.ml_integration = MagicMock()
+    coordinator.ml_integration.get_ml_context = AsyncMock(
+        return_value={
+            "consensus_score": 0.1,
+            "regime": {"predicted_regime": "bearish", "confidence": 0.2},
+            "quality_score": 0.1,
+        }
+    )
+
+    enriched = await coordinator._enrich_signal_for_dynamic_rr(
+        {
+            "side": "buy",
+            "symbol": "BTC/USDT:USDT",
+            "ml_confidence": 0.95,
+            "regime_name": "bullish",
+            "regime_confidence": 0.90,
+            "regime_weight": 1.0,
+        }
+    )
+
+    coordinator.ml_integration.get_ml_context.assert_not_called()
+    assert enriched["regime_name"] == "bullish"
+    assert enriched["regime_confidence"] == pytest.approx(0.90)
+    assert enriched["regime_weight"] == pytest.approx(1.0)
+    assert enriched["regime_context_source"] == "signal"

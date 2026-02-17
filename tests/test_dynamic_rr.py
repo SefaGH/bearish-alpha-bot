@@ -175,6 +175,7 @@ class TestDynamicRRCalculation:
             'rl_is_agree': False,
             'rl_action_prob': 0.4,
             'regime_confidence': 0.4,
+            'regime_weight': 1.0,
             'regime_name': 'volatile',
             'strategy_min_rr': 0.5
         }
@@ -278,7 +279,91 @@ class TestDynamicRRCalculation:
 
         target_rr = rule._calculate_dynamic_target(signal)
         assert target_rr == pytest.approx(2.0, rel=1e-6)
-    
+
+    def test_regime_name_dict_uses_predicted_regime_key(self):
+        """risk_rules should tolerate dict regime payloads and extract predicted_regime."""
+        config = RiskConfiguration({
+            'equity_usd': 10000,
+            'rr_dynamic': {
+                'enabled': True,
+                'base_target_rr': 1.5,
+                'lower_bound_rr': 0.5,
+                'upper_bound_rr': 3.0,
+                'weights': {
+                    'ml_confidence': 0.0,
+                    'rl_agreement': 0.0,
+                    'regime_clarity': 0.0,
+                    'volume_strength': 0.0,
+                    'momentum_strength': 0.0
+                },
+                'fallback': {
+                    'missing_ml_default': 0.5,
+                    'missing_rl_default': 0.5,
+                    'missing_regime_default': 0.3
+                },
+                'regime_multipliers': {
+                    'bearish': 0.9,
+                    'neutral': 1.0
+                }
+            }
+        })
+
+        rule = RiskRewardRatioRule(config=config)
+        signal = {
+            'symbol': 'BTC/USDT',
+            'entry': 100,
+            'stop': 99,
+            'target': 102,
+            'regime_name': {'predicted_regime': 'bearish'},
+            'regime_weight': 1.0,
+            'strategy_min_rr': 0.5,
+        }
+
+        target_rr = rule._calculate_dynamic_target(signal)
+        assert target_rr == pytest.approx(1.35, rel=1e-6)
+
+    def test_missing_regime_weight_derived_from_confidence_hard_reject(self):
+        """Missing regime_weight should derive from confidence instead of defaulting to full weight."""
+        config = RiskConfiguration({
+            'equity_usd': 10000,
+            'rr_dynamic': {
+                'enabled': True,
+                'base_target_rr': 1.5,
+                'lower_bound_rr': 0.5,
+                'upper_bound_rr': 3.0,
+                'weights': {
+                    'ml_confidence': 0.0,
+                    'rl_agreement': 0.0,
+                    'regime_clarity': 0.2,
+                    'volume_strength': 0.0,
+                    'momentum_strength': 0.0
+                },
+                'fallback': {
+                    'missing_ml_default': 0.5,
+                    'missing_rl_default': 0.5,
+                    'missing_regime_default': 0.3
+                },
+                'regime_multipliers': {
+                    'neutral': 1.0
+                }
+            }
+        })
+
+        rule = RiskRewardRatioRule(config=config)
+        signal = {
+            'symbol': 'BTC/USDT',
+            'entry': 100,
+            'stop': 99,
+            'target': 102,
+            'regime_name': 'neutral',
+            'regime_confidence': 0.186,
+            'strategy_min_rr': 0.5,
+            # regime_weight intentionally missing
+        }
+
+        target_rr = rule._calculate_dynamic_target(signal)
+        assert target_rr == pytest.approx(1.5, rel=1e-6)
+
     def test_respects_bounds(self):
         """Dynamic target should stay within configured bounds."""
         config = RiskConfiguration({
@@ -660,6 +745,7 @@ class TestStrategyOverrides:
         base_signal = {
             'symbol': 'BTC/USDT',
             'regime_name': 'bullish',
+            'regime_weight': 1.0,
             'strategy_min_rr': 0.5
         }
 

@@ -776,7 +776,9 @@ Portfolio Heat Cap: {self.risk_limits.max_portfolio_risk:.1%} = ${self.max_portf
             config_dict: Configuration dictionary from YAML
         """
         ml_config = config_dict.get('ml', {}) if config_dict else {}
-        regime_config = ml_config.get('regime', {})
+        regime_config = ml_config.get('regime_prediction', {})
+        if not isinstance(regime_config, dict) or not regime_config:
+            regime_config = ml_config.get('regime', {})
         
         # Build configuration with priority chain: ENV > config > defaults
         self.regime_soft_weight = {

@@ -1365,6 +1365,7 @@ ml:
   reinforcement_learning:
     enabled: true                     # Override: ML_RL_ENABLED
     legacy_dqn_enabled: false         # Override with: ML_RL_LEGACY_ENABLED
+    disable_legacy_rl_when_ppo_enabled: true  # Override with: ML_RL_DISABLE_LEGACY_WHEN_PPO
     ppo_enabled: true                 # Override with: ML_RL_PPO_ENABLED
     ppo_symbols: BTC/USDT:USDT        # Override with: ML_RL_PPO_SYMBOLS
     ppo_timeframe: "1h"               # Override with: ML_RL_PPO_TIMEFRAME

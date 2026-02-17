@@ -762,15 +762,49 @@ class RiskRewardRatioRule(BaseRiskRule):
         rl_agree = 1.0 if signal.get('rl_is_agree', False) else 0.0
         rl_prob = _safe_float(signal.get('rl_action_prob'), _safe_float(fallback.get('missing_rl_default', 0.5), 0.5))
         regime_conf = _safe_float(signal.get('regime_confidence'), _safe_float(fallback.get('missing_regime_default', 0.3), 0.3))
-        regime_name = signal.get('regime_name', 'neutral').lower()
+        regime_name_raw = signal.get('regime_name', 'neutral')
+        if isinstance(regime_name_raw, dict):
+            regime_name = str(
+                regime_name_raw.get('predicted_regime')
+                or regime_name_raw.get('regime')
+                or 'neutral'
+            ).lower()
+        else:
+            regime_name = str(regime_name_raw or 'neutral').lower()
         
-        # Get regime_weight (soft-weighting), default to 1.0 if not available
-        # Note: regime_weight is calculated from regime_conf in strategy_integration.py:
-        #   - regime_weight = None if regime_conf < 0.30 (hard reject)
-        #   - regime_weight = regime_conf / 0.60 if 0.30 <= regime_conf < 0.60
-        #   - regime_weight = 1.0 if regime_conf >= 0.60
-        # Legacy signals without regime_weight are assumed to have full confidence (1.0)
-        regime_weight = _safe_float(signal.get('regime_weight', 1.0), 1.0)
+        # Get regime_weight (soft-weighting). When missing, derive from regime_conf
+        # to avoid hard-reject paradox (low confidence being treated as full confidence).
+        regime_weight_raw = signal.get('regime_weight')
+        if regime_weight_raw is not None:
+            regime_weight = _clamp01(_safe_float(regime_weight_raw, 1.0))
+        else:
+            soft_cfg = getattr(self.risk_config, 'regime_soft_weight', {}) if self.risk_config else {}
+            hard_reject = _safe_float(
+                (soft_cfg or {}).get('min_confidence_hard_reject'),
+                0.30,
+            )
+            full_weight = _safe_float(
+                (soft_cfg or {}).get('min_confidence_full_weight'),
+                0.60,
+            )
+            if full_weight <= 0:
+                full_weight = 0.60
+
+            if regime_conf < hard_reject:
+                regime_weight = 0.0
+            elif regime_conf >= full_weight:
+                regime_weight = 1.0
+            else:
+                regime_weight = _clamp01(regime_conf / full_weight)
+
+            logger.debug(
+                "[Dynamic R/R] regime_weight fallback derived from regime_conf=%.2f -> %.2f "
+                "(hard_reject=%.2f full_weight=%.2f)",
+                regime_conf,
+                regime_weight,
+                hard_reject,
+                full_weight,
+            )
         
         # Calculate relaxation (reduces required R/R for high confidence)
         base_relaxation = (

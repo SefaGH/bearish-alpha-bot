@@ -52,7 +52,9 @@ class AIEnhancedStrategyAdapter:
         )
 
         # Soft-weight thresholds from config
-        regime_config = self.config.get("regime", {}) or {}
+        regime_config = self.config.get("regime_prediction", {}) or {}
+        if not regime_config:
+            regime_config = self.config.get("regime", {}) or {}
         self.regime_hard_reject: float = float(
             regime_config.get("min_confidence_hard_reject", 0.30)
         )
@@ -119,9 +121,9 @@ class AIEnhancedStrategyAdapter:
                         symbol, timeframe="1h", limit=2000
                     )
                     if price_data is not None and not getattr(price_data, "empty", True):
-                        # NOTE: predict_regime_transition expected (symbol, price_data)
+                        # Use explicit horizon for parity with get_ml_context().
                         regime_info = await self.regime_predictor.predict_regime_transition(
-                            symbol, price_data
+                            symbol=symbol, price_data=price_data, horizon="1h"
                         )
                     else:
                         logger.warning(
