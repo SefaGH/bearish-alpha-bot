@@ -1012,10 +1012,30 @@ class StrategyCoordinator:
             return False, meta
 
         try:
-            limit = int(crash_cfg.get("panic_lookback_bars", 3) or 3)
+            lookback = int(crash_cfg.get("panic_lookback_bars", 3) or 3)
         except Exception:
-            limit = 3
-        limit = max(3, limit)
+            lookback = 3
+        lookback = max(3, lookback)
+
+        indicators_cfg: Dict[str, Any] = {}
+        try:
+            pipeline_cfg = getattr(self.market_data_pipeline, "config", None)
+            if isinstance(pipeline_cfg, dict):
+                indicators_cfg = pipeline_cfg.get("indicators") or {}
+        except Exception:
+            indicators_cfg = {}
+        try:
+            atr_period = max(1, int(indicators_cfg.get("atr_period", 14) or 14))
+        except Exception:
+            atr_period = 14
+        try:
+            ema_fast_period = max(1, int(indicators_cfg.get("ema_fast", 21) or 21))
+        except Exception:
+            ema_fast_period = 21
+
+        # Keep enough bars for ATR and EMA-fast even when include_forming merges/replaces tail rows.
+        indicator_warmup = max(atr_period, ema_fast_period) + 2
+        limit = max(lookback, indicator_warmup)
 
         try:
             df = await self.market_data_pipeline.get_latest_ohlcv(
@@ -1036,34 +1056,31 @@ class StrategyCoordinator:
         except Exception:
             return False, meta
 
-        close_now = None
-        prev_close = None
-        try:
-            close_now = float(last.get("close"))
-        except Exception:
-            close_now = None
-        try:
-            prev_close = float(prev.get("close"))
-        except Exception:
-            prev_close = None
+        def _finite_float(value: Any) -> Optional[float]:
+            try:
+                numeric = float(value)
+            except Exception:
+                return None
+            if not math.isfinite(numeric):
+                return None
+            return numeric
+
+        close_now = _finite_float(last.get("close"))
+        prev_close = _finite_float(prev.get("close"))
+        atr_val = _finite_float(last.get("atr")) if "atr" in df.columns else None
+        ema_fast_val = _finite_float(last.get("ema_fast")) if "ema_fast" in df.columns else None
 
         meta["close"] = close_now
-        try:
-            meta["atr"] = float(last.get("atr")) if "atr" in df.columns else None
-        except Exception:
-            meta["atr"] = None
-        try:
-            meta["ema_fast"] = float(last.get("ema_fast")) if "ema_fast" in df.columns else None
-        except Exception:
-            meta["ema_fast"] = None
+        meta["atr"] = atr_val
+        meta["ema_fast"] = ema_fast_val
         try:
             if (
-                meta.get("ema_fast") is not None
-                and meta.get("atr") is not None
+                ema_fast_val is not None
+                and atr_val is not None
                 and close_now is not None
-                and float(meta.get("atr") or 0.0) > 0
+                and atr_val > 0
             ):
-                meta["ema_fast_gap_atr"] = (float(meta["ema_fast"]) - float(close_now)) / float(meta["atr"])
+                meta["ema_fast_gap_atr"] = (ema_fast_val - close_now) / atr_val
         except Exception:
             meta["ema_fast_gap_atr"] = None
 
@@ -1092,8 +1109,7 @@ class StrategyCoordinator:
         atr_pct = None
         high_atr = False
         try:
-            atr_val = float(last.get("atr")) if "atr" in df.columns else None
-            if close_now and close_now > 0 and atr_val is not None:
+            if close_now is not None and close_now > 0 and atr_val is not None:
                 atr_pct = atr_val / close_now
                 if atr_th > 0 and atr_pct >= atr_th and prev_close is not None and close_now < prev_close:
                     high_atr = True
