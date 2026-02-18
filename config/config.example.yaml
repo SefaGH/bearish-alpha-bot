@@ -590,6 +590,7 @@ signals:
     trend_confirmation_ema_gap_pct_min: 0.0020 # EMA gap minimum for trend RSI penalty (0.0020 = 0.20%)
     trend_confirmation_ema_gap_pct_on: 0.0020  # Optional hysteresis on-threshold (0.20%)
     trend_confirmation_ema_gap_pct_off: 0.0015 # Optional hysteresis off-threshold (0.15%)
+    trend_confirmation_penalty_scale: 1000.0   # Proportional penalty scale: min(max_penalty, ema_gap_pct * scale)
     # Extreme bypass (panic mode) - skips trend RSI penalty + allows ML veto bypass
     extreme_bypass:
       enabled: true                  # Override with: STRATEGY_OB_EXTREME_BYPASS_ENABLED
@@ -953,7 +954,7 @@ strategies:
         enabled: true                 # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__ENABLED
         low_side_enabled: true        # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__LOW_SIDE_ENABLED
         high_side_enabled: false      # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__HIGH_SIDE_ENABLED
-        min_penetration: 2.0          # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__MIN_PENETRATION
+        min_penetration: 0.0          # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__MIN_PENETRATION
     soft_deferral:
       cancel_on_zone_mismatch: true   # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOFT_DEFERRAL__CANCEL_ON_ZONE_MISMATCH
     telemetry:

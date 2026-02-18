@@ -198,3 +198,45 @@ def test_extreme_bypass_soft_penalty_forces_scalp_and_reduces_position_multiplie
     # Also persisted to meta for downstream auditability.
     assert meta_pen.get("filter", {}).get("force_scalp_mode") is True
     assert float(meta_pen.get("filter", {}).get("size_multiplier") or 0.0) == pytest.approx(0.5, rel=1e-9)
+
+
+def test_trend_penalty_without_scale_blocks_near_threshold_signal():
+    cfg = _base_cfg()
+    cfg["trend_confirmation_penalty_scale"] = 0.0
+    cfg["extreme_bypass"] = {
+        "enabled": False,
+        "triggers": {
+            "price_drop_15m_pct": 0.8,
+            "rsi_15m_below": 30.0,
+            "min_atr_pct": 0.006,
+        },
+    }
+
+    strategy = AdaptiveOversoldBounce(cfg)
+    # ema_gap_pct ~= (110 - 109.604) / 110 = 0.0036
+    # Without scale, penalty stays fixed at 5.0 => threshold 27.0
+    df_30m = _df_30m(close=90.0, rsi=28.1, atr=1.0, ema_fast=109.604, ema_mid=110.0)
+
+    signal = strategy.signal(df_30m=df_30m, symbol="BTC/USDT:USDT")
+    assert signal is None
+
+
+def test_trend_penalty_with_scale_allows_near_threshold_signal():
+    cfg = _base_cfg()
+    cfg["trend_confirmation_penalty_scale"] = 1000.0
+    cfg["extreme_bypass"] = {
+        "enabled": False,
+        "triggers": {
+            "price_drop_15m_pct": 0.8,
+            "rsi_15m_below": 30.0,
+            "min_atr_pct": 0.006,
+        },
+    }
+
+    strategy = AdaptiveOversoldBounce(cfg)
+    # ema_gap_pct ~= 0.0036 -> penalty ~= 3.6 => threshold ~= 28.4
+    # RSI 28.1 should pass RSI filter with proportional penalty.
+    df_30m = _df_30m(close=90.0, rsi=28.1, atr=1.0, ema_fast=109.604, ema_mid=110.0)
+
+    signal = strategy.signal(df_30m=df_30m, symbol="BTC/USDT:USDT")
+    assert signal is not None

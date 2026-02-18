@@ -1581,7 +1581,15 @@ class AdaptiveOversoldBounce(OversoldBounce):
             )
 
             # Trend confirmation: if market is in a strong downswing (ema_fast < ema_mid), demand deeper RSI
-            ema_trend_penalty = float(self.strategy_config.get('trend_confirmation_rsi_penalty', 5.0))
+            ema_trend_penalty_max = float(self.strategy_config.get('trend_confirmation_rsi_penalty', 5.0))
+            ema_trend_penalty = ema_trend_penalty_max
+            penalty_scale_raw = self.strategy_config.get('trend_confirmation_penalty_scale', 1000.0)
+            try:
+                penalty_scale = float(penalty_scale_raw)
+            except Exception:
+                penalty_scale = None
+            if penalty_scale is not None and (not math.isfinite(penalty_scale) or penalty_scale <= 0):
+                penalty_scale = None
             min_adaptive_rsi = float(self.strategy_config.get('trend_confirmation_min_rsi', 8.0))
             ema_gap_pct_min = float(self.strategy_config.get('trend_confirmation_ema_gap_pct_min', 0.0) or 0.0)
             gap_on_raw = self.strategy_config.get('trend_confirmation_ema_gap_pct_on', None)
@@ -1656,6 +1664,13 @@ class AdaptiveOversoldBounce(OversoldBounce):
 
             base_threshold = adaptive_rsi_threshold
             if active:
+                if penalty_scale is not None and ema_gap_pct is not None and math.isfinite(float(ema_gap_pct)):
+                    ema_trend_penalty = min(
+                        ema_trend_penalty_max,
+                        max(0.0, float(ema_gap_pct)) * float(penalty_scale),
+                    )
+                else:
+                    ema_trend_penalty = ema_trend_penalty_max
                 new_threshold = max(min_adaptive_rsi, adaptive_rsi_threshold - ema_trend_penalty)
                 if new_threshold != adaptive_rsi_threshold:
                     logger.debug(
