@@ -2126,6 +2126,17 @@ class LiveTradingConfiguration:
             logger.info(f"   Min Regime Confidence: {get_nested(config, ['ml', 'prediction', 'min_confidence_threshold'])}")
             logger.info(f"   RL Veto Threshold:     {get_nested(config, ['ml', 'reinforcement_learning', 'hold_confidence_threshold'])}")
             logger.info(f"   Legacy RL Enabled:     {get_nested(config, ['ml', 'reinforcement_learning', 'legacy_dqn_enabled'], False)}")
+            gemma_mode = str(get_nested(config, ['ml', 'governance', 'gemma_mode'], 'apply'))
+            ppo_mode = str(get_nested(config, ['ml', 'governance', 'ppo_mode'], 'apply'))
+            logger.info(f"   Governance Modes:      GEMMA={gemma_mode} | PPO={ppo_mode}")
+            auto_enabled = bool(get_nested(config, ['ml', 'governance', 'automation', 'enabled'], False))
+            auto_interval = get_nested(config, ['ml', 'governance', 'automation', 'interval_sec'], 300)
+            ppo_auto_enabled = bool(get_nested(config, ['ml', 'governance', 'automation', 'ppo', 'enabled'], True))
+            ppo_degrade_mode = str(get_nested(config, ['ml', 'governance', 'automation', 'ppo', 'degrade_to_mode'], 'shadow'))
+            logger.info(
+                f"   Governance Auto:       enabled={auto_enabled} interval={auto_interval}s "
+                f"| PPO enabled={ppo_auto_enabled} degrade_to={ppo_degrade_mode}"
+            )
             ppo_enabled = bool(get_nested(config, ['ml', 'reinforcement_learning', 'ppo_enabled'], False))
             ppo_symbols = get_nested(config, ['ml', 'reinforcement_learning', 'ppo_symbols'], [])
             if isinstance(ppo_symbols, list):

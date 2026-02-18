@@ -106,6 +106,16 @@ order_manager:
   fallback_soft_gate_max_spread_bps: 8.0
   fallback_soft_gate_max_peak_distance_bps: 20.0
   fallback_soft_gate_fail_closed_on_insufficient_context: false
+  # Fallback slippage guard (adaptive threshold):
+  # allowed_bps = clamp(max(floor_bps, atr_k*atr_bps + spread_m*spread_bps), min_bps, max_bps)
+  fallback_slippage_guard_enabled: true
+  fallback_slippage_guard_floor_bps: 8.0
+  fallback_slippage_guard_min_bps: 5.0
+  fallback_slippage_guard_max_bps: 35.0
+  fallback_slippage_guard_atr_k: 0.5
+  fallback_slippage_guard_spread_m: 1.0
+  fallback_slippage_guard_reference: entry
+  fallback_slippage_guard_fail_closed_on_insufficient_context: false
 
 # ==============================================================================
 # RISK MANAGEMENT - ENHANCED POSITION SIZING
@@ -235,6 +245,12 @@ risk:
         base_target_rr: 1.25  # Override with: RISK__STRATEGY_PROFILES__MEAN_REVERSION__RR_DYNAMIC__BASE_TARGET_RR
         lower_bound_rr: 1.15  # Override with: RISK__STRATEGY_PROFILES__MEAN_REVERSION__RR_DYNAMIC__LOWER_BOUND_RR
         upper_bound_rr: 3.0
+      # Paket-6: Strategy-specific volume risk override (LOW profile softening for MR)
+      volume_bucket_risk_matrix:
+        LOW:
+          position_size_multiplier: 0.5
+          stop_loss_multiplier: 1.05
+          take_profit_multiplier: 0.97
 
   # Volume-aware risk scaling
   volume_bucket_risk_matrix:        # Override with: RISK_VOLUME_BUCKET_MATRIX
@@ -488,10 +504,23 @@ signals:
       mode: "observe"                # Override with: SIGNALS__DIRECTIONAL_BIAS__ROLLOUT__MODE ; enforce | observe | off
       canary_symbols:
         - "BTC/USDT:USDT"            # Override with: SIGNALS__DIRECTIONAL_BIAS__ROLLOUT__CANARY_SYMBOLS ; "*" = all symbols
+
+  signal_scoring:
+    min_quality_score: 0.55          # Hard gate (0..1); values >1 are interpreted as percent (e.g., 55 -> 0.55)
+    health_policy:
+      use_healthy_components_only: true  # Exclude unhealthy components from denominator/weights
+      ml_require_healthy: true           # Drop ML weight when ML health is degraded
+      ppo_require_healthy: true          # Drop PPO weight when PPO health is degraded
+      force_disable_ml: false            # Emergency kill-switch for ML contribution
+      force_disable_ppo: false           # Emergency kill-switch for PPO contribution
   
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
     cooldown_seconds: 20              # Override with: DUPLICATE_PREVENTION_COOLDOWN
+    same_signal_cooldown_seconds: 600 # Optional: blocks repeated (symbol+tf+side+signal_px bucket) even after base cooldown
+    same_signal_tick_size: 0.1        # Optional: tick-rounding bucket size for same-signal detection
+    same_signal_price_tolerance_bps: 0.0  # Optional: alternative bucket size component (abs(px)*bps/10000)
+    same_signal_price_tolerance_pct: 0.0  # Optional: alternative bucket size component (abs(px)*pct)
     price_delta_bypass_threshold: 0.0015 # Override with: PRICE_DELTA_BYPASS_THRESHOLD
     price_delta_bypass_enabled: false # Override with: PRICE_DELTA_BYPASS_ENABLED
     rsi_session_oversold_threshold: 30  # RSI <= this starts/updates low-anchor session used for duplicate price-delta reference
@@ -506,6 +535,10 @@ signals:
       fast_cooldown_seconds: 15       # Override with: DUPLICATE_DYNAMIC_FAST_SECONDS
       medium_cooldown_seconds: 45     # Override with: DUPLICATE_DYNAMIC_MEDIUM_SECONDS
       slow_cooldown_seconds: 120      # Override with: DUPLICATE_DYNAMIC_SLOW_SECONDS
+
+  band_snapshot_consistency:
+    mismatch_tolerance_abs: 0.000001  # Ingress check tolerance for vwap_lower/upper vs band_snapshot.lower/upper
+
   oversold_bounce:
     enable: true                      # Override with: STRATEGY_OB_ENABLED
     ignore_regime: false              # Override with: STRATEGY_OB_IGNORE_REGIME
@@ -832,6 +865,37 @@ execution_profiles:
       enabled: true
 
 # ==============================================================================
+# MONITORING & CANARY METRICS
+# ==============================================================================
+monitoring:
+  performance_report_interval: 3600   # Existing engine performance report cadence (sec)
+  rl_telemetry_interval_seconds: 120  # Governance automation telemetry cadence (sec)
+  canary_metrics:
+    enabled: true
+    interval_sec: 300                 # Emit KPI snapshot every N seconds
+    canary_symbols:                   # [] or ["*"] => all symbols; otherwise scope metrics to this list
+      - "BTC/USDT:USDT"
+    alerts:
+      enabled: true
+      min_entries: 15                 # Require at least N opened entries before evaluating entry/postfill-based rates
+      min_same_signal_total: 15       # Require at least N processed signals before same-signal repeat alarm
+      min_band_checks: 15             # Require at least N band consistency checks before mismatch alarm
+      min_slippage_samples: 15        # Require at least N fill samples before slippage p95 alarm
+      thresholds:
+        postfill_exit_rate:           # Fraction (0-1)
+          warning: 0.15
+          critical: 0.25
+        same_signal_repeat_rate:      # Percent (0-100)
+          warning: 5.0
+          critical: 10.0
+        band_snapshot_mismatch_rate:  # Fraction (0-1)
+          warning: 0.01
+          critical: 0.03
+        slippage_p95_bps:             # Basis points
+          warning: 3.0
+          critical: 6.0
+
+# ==============================================================================
 # STRATEGY ROUTING (Regime-aware)
 # ==============================================================================
 strategies:
@@ -1123,11 +1187,17 @@ strategies:
       warmup_samples: 50
       update_interval_sec: 60        # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__UPDATE_INTERVAL_SEC
       min_m_change: 0.05
-      m_min: 1.0                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MIN ; Lower = tighter bands in calm markets
+      m_min: 1.5                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MIN ; Guard against over-tight bands in calm markets
       m_max: 3.0                     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__M_MAX ; Upper cap in bursts
       log_every_update: true
       freeze_on_trend: true
       adx_freeze_threshold: 36.0     # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__ADX_FREEZE_THRESHOLD ; Looser freeze (old: 25 froze too early)
+      adx_consolidation_freeze_threshold: 20.0  # YENI: ADX bu seviyenin altina inerse update freeze (konsolidasyon)
+      double_squeeze_detection:
+        enabled: true
+        std_pct_threshold: -30.0         # YENI: std'de >=%30 daralma
+        multiplier_pct_threshold: -20.0  # YENI: multiplier'da >=%20 daralma
+        action: freeze
       dynamic_lookback:
         enabled: true                # Override with: STRATEGIES__MEAN_REVERSION__DYNAMIC_CONTROLLER__DYNAMIC_LOOKBACK__ENABLED ; Vital: adapt lookback instead of fixed 1440 bars
         # NOTE: lookback_* values are BARS in the VWAP timeframe (strategies.mean_reversion.timeframe), not minutes.
@@ -1251,6 +1321,32 @@ dca:
 # ==============================================================================
 ml:
   enabled: true                       # Tüm ML özelliklerini etkinleştiren ana anahtar. Override: ML_ENABLED
+
+  # ----------------------------------------------------------------------------
+  # A0) ML YÖNETİŞİMİ (Paket-9)
+  # ML bileşenlerinin karar etkisini merkezi olarak yönetir.
+  # - apply: karar akışına etkisi aktif
+  # - shadow: bileşen çalışır ve log üretir; karar etkisi sonraki paketlerde nötrlenir
+  # - disabled: bileşen runtime'da kapatılır
+  # ----------------------------------------------------------------------------
+  governance:
+    gemma_mode: "apply"               # Override with: ML_GOVERNANCE_GEMMA_MODE (apply|shadow|disabled)
+    ppo_mode: "apply"                 # Override with: ML_GOVERNANCE_PPO_MODE (apply|shadow|disabled)
+    automation:
+      enabled: true                   # Override with: ML_GOVERNANCE_AUTOMATION_ENABLED
+      interval_sec: 120               # Override with: ML_GOVERNANCE_AUTOMATION_INTERVAL_SEC
+      ppo:
+        enabled: true                 # Override with: ML_GOVERNANCE_PPO_AUTOMATION_ENABLED
+        min_window_samples: 20        # Override with: ML_GOVERNANCE_PPO_MIN_WINDOW_SAMPLES
+        degrade_after_windows: 2      # Override with: ML_GOVERNANCE_PPO_DEGRADE_AFTER_WINDOWS
+        recover_after_windows: 6      # Override with: ML_GOVERNANCE_PPO_RECOVER_AFTER_WINDOWS
+        cooldown_sec: 1800            # Override with: ML_GOVERNANCE_PPO_COOLDOWN_SEC
+        auto_recover: false           # Override with: ML_GOVERNANCE_PPO_AUTO_RECOVER
+        degrade_to_mode: "shadow"     # Override with: ML_GOVERNANCE_PPO_DEGRADE_TO_MODE (shadow|disabled)
+        bad_flat_vote_rate: 0.97      # Override with: ML_GOVERNANCE_PPO_BAD_FLAT_VOTE_RATE
+        bad_avg_score_max: 0.08       # Override with: ML_GOVERNANCE_PPO_BAD_AVG_SCORE_MAX
+        good_flat_vote_rate: 0.80     # Override with: ML_GOVERNANCE_PPO_GOOD_FLAT_VOTE_RATE
+        good_avg_score_min: 0.40      # Override with: ML_GOVERNANCE_PPO_GOOD_AVG_SCORE_MIN
 
   # ----------------------------------------------------------------------------
   # A) GENEL ÖZELLİK MÜHENDİSLİĞİ (Tüm Modeller İçin Ortak)

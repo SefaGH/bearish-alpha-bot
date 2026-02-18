@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -165,6 +167,106 @@ def test_mr_controller_respects_update_interval():
     )
     assert d2.updated is True
     assert d2.band_multiplier == 3.0
+
+
+def test_mr_controller_freezes_on_low_adx_consolidation():
+    controller = DynamicMRController(
+        {
+            "enabled": True,
+            "warmup_samples": 1,
+            "abs_z_window": 1,
+            "update_interval_sec": 0,
+            "min_m_change": 0.0,
+            "m_min": 1.0,
+            "m_max": 4.0,
+            "freeze_on_trend": True,
+            "adx_freeze_threshold": 36.0,
+            "adx_consolidation_freeze_threshold": 20.0,
+            "log_every_update": False,
+        },
+        static_band_multiplier=1.0,
+        static_lookback=1440,
+    )
+
+    ts0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    d0 = controller.evaluate(
+        symbol="BTC/USDT:USDT",
+        ts=ts0,
+        price=102.0,  # abs_z = 1.0
+        vwap=100.0,
+        vwap_std=2.0,
+        adx=25.0,
+        atr=None,
+        df_vwap=None,
+    )
+    assert d0.updated is True
+    assert d0.band_multiplier == pytest.approx(1.0)
+
+    d1 = controller.evaluate(
+        symbol="BTC/USDT:USDT",
+        ts=ts0 + timedelta(minutes=1),
+        price=108.0,  # abs_z would jump to 4.0 if update were allowed
+        vwap=100.0,
+        vwap_std=2.0,
+        adx=15.0,     # low-ADX consolidation freeze
+        atr=None,
+        df_vwap=None,
+    )
+    assert d1.updated is False
+    assert d1.reason == "freeze_on_trend_low_adx"
+    assert d1.band_multiplier == pytest.approx(d0.band_multiplier)
+
+
+def test_mr_controller_freezes_on_double_squeeze():
+    controller = DynamicMRController(
+        {
+            "enabled": True,
+            "warmup_samples": 1,
+            "abs_z_window": 1,
+            "update_interval_sec": 0,
+            "min_m_change": 0.0,
+            "m_min": 1.0,
+            "m_max": 4.0,
+            "freeze_on_trend": False,
+            "log_every_update": False,
+            "double_squeeze_detection": {
+                "enabled": True,
+                "std_pct_threshold": -30.0,
+                "multiplier_pct_threshold": -20.0,
+                "action": "freeze",
+            },
+        },
+        static_band_multiplier=1.0,
+        static_lookback=1440,
+    )
+
+    ts0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    d0 = controller.evaluate(
+        symbol="BTC/USDT:USDT",
+        ts=ts0,
+        price=130.0,  # abs_z = 3.0
+        vwap=100.0,
+        vwap_std=10.0,
+        adx=25.0,
+        atr=None,
+        df_vwap=None,
+    )
+    assert d0.updated is True
+    assert d0.band_multiplier == pytest.approx(3.0)
+
+    d1 = controller.evaluate(
+        symbol="BTC/USDT:USDT",
+        ts=ts0 + timedelta(minutes=1),
+        price=105.0,  # abs_z = 1.0 -> multiplier contraction
+        vwap=100.0,
+        vwap_std=5.0,  # std contraction
+        adx=25.0,
+        atr=None,
+        df_vwap=None,
+    )
+    assert d1.updated is False
+    assert d1.reason == "freeze_double_squeeze"
+    assert d1.band_multiplier == pytest.approx(d0.band_multiplier)
 
 
 def test_mr_controller_local_bands_match_pipeline_math():
@@ -355,3 +457,68 @@ def test_mr_controller_z_uses_effective_vwap_std():
     )
 
     assert decision.z == pytest.approx((price - decision.vwap) / decision.vwap_std, rel=1e-12, abs=1e-12)
+
+
+def test_mr_controller_decision_log_uses_post_overlay_values(caplog):
+    controller = DynamicMRController(
+        {
+            "enabled": True,
+            "warmup_samples": 1,
+            "abs_z_window": 20,
+            "update_interval_sec": 0,
+            "min_m_change": 0.0,
+            "m_min": 1.0,
+            "m_max": 2.0,
+            "freeze_on_trend": False,
+            "log_every_update": True,
+            "adaptive_settings": {
+                "enabled": True,
+                "enable_volume_adapt": False,
+                "enable_slope_shift": True,
+                "slope_lookback": 2,
+                "slope_shift_mult": 1.0,
+                "slope_shift_std_cap": 2.0,
+            },
+        },
+        static_band_multiplier=1.0,
+        static_lookback=180,
+    )
+
+    caplog.set_level(logging.INFO, logger="src.strategies.mr_controller")
+
+    ts0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    controller.evaluate(
+        symbol="BTC/USDT:USDT",
+        ts=ts0,
+        price=100.0,
+        vwap=100.0,
+        vwap_std=2.0,
+        adx=10.0,
+        atr=None,
+        df_vwap=None,
+    )
+    caplog.clear()
+
+    decision = controller.evaluate(
+        symbol="BTC/USDT:USDT",
+        ts=ts0 + timedelta(minutes=1),
+        price=100.0,
+        vwap=101.0,
+        vwap_std=2.0,
+        adx=10.0,
+        atr=None,
+        df_vwap=None,
+    )
+
+    payloads = []
+    for rec in caplog.records:
+        msg = str(rec.message)
+        if "\"event\":\"mr_controller_decision\"" in msg:
+            payloads.append(json.loads(msg))
+    assert payloads
+
+    payload = payloads[-1]
+    assert payload["params"]["overlay_applied"] is True
+    assert payload["derived"]["lower"] == pytest.approx(decision.lower, abs=1e-9)
+    assert payload["derived"]["upper"] == pytest.approx(decision.upper, abs=1e-9)
+    assert payload["derived"]["lower_pre_overlay"] != pytest.approx(payload["derived"]["lower"], abs=1e-9)

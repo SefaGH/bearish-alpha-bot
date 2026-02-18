@@ -2063,6 +2063,24 @@ class VWAPMeanReversion(BaseStrategy):
         lower = float(controller_decision.lower) if controller_decision else vwap_lower
         upper = float(controller_decision.upper) if controller_decision else vwap_upper
         vwap_target = float(controller_decision.vwap) if controller_decision else vwap_main
+        band_source = "controller_post_overlay" if controller_decision else "pipeline_fallback"
+        band_snapshot_ts_utc: Optional[str] = None
+        try:
+            ts_val = df_sig.index[-1]
+            if isinstance(ts_val, pd.Timestamp):
+                ts_dt = ts_val.to_pydatetime()
+            elif isinstance(ts_val, datetime):
+                ts_dt = ts_val
+            else:
+                ts_dt = None
+            if ts_dt is not None:
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                else:
+                    ts_dt = ts_dt.astimezone(timezone.utc)
+                band_snapshot_ts_utc = ts_dt.isoformat()
+        except Exception:
+            band_snapshot_ts_utc = None
         vwap_std_val = None
         try:
             if controller_decision is not None and controller_decision.vwap_std is not None:
@@ -3405,6 +3423,22 @@ class VWAPMeanReversion(BaseStrategy):
         except Exception:
             impulse_meta = None
 
+        band_snapshot = {
+            "source": band_source,
+            "lower": float(lower),
+            "upper": float(upper),
+            "vwap": float(vwap_target),
+            "vwap_std": float(effective_vwap_std) if effective_vwap_std is not None else (
+                float(vwap_std_val) if vwap_std_val is not None else None
+            ),
+            "band_multiplier": float(effective_band_mult),
+            "controller_reason": str(controller_decision.reason) if controller_decision is not None else "pipeline_static",
+            "ts_utc": band_snapshot_ts_utc,
+        }
+        if controller_decision is not None:
+            band_snapshot["lookback"] = int(controller_decision.lookback)
+            band_snapshot["controller_updated"] = bool(controller_decision.updated)
+
         signal = {
             "strategy_name": self.strategy_name,
             "symbol": symbol,
@@ -3428,6 +3462,7 @@ class VWAPMeanReversion(BaseStrategy):
             "vwap_upper": upper,
             "vwap_std": effective_vwap_std,
             "band_multiplier_effective": effective_band_mult,
+            "band_snapshot": band_snapshot,
             "stop_loss_std_delta": self.stop_loss_std_delta,
             "adx": adx_val,
             "volume_strength": volume_strength,

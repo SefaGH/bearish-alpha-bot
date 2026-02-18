@@ -615,6 +615,94 @@ class TestDynamicRRValidation:
         assert is_valid is False
         assert 'Zero risk' in reason
 
+    def test_rr_floor_is_enforced_even_when_dynamic_target_is_below_1(self):
+        """Pre-fill RR should reject under 1.0 even if dynamic target is lower."""
+        config = RiskConfiguration({
+            'equity_usd': 10000,
+            'rr_dynamic': {
+                'enabled': True,
+                'base_target_rr': 0.8,
+                'lower_bound_rr': 0.8,
+                'upper_bound_rr': 2.0,
+                'weights': {
+                    'ml_confidence': 0.0,
+                    'rl_agreement': 0.0,
+                    'regime_clarity': 0.0,
+                    'volume_strength': 0.0,
+                    'momentum_strength': 0.0,
+                },
+                'fallback': {
+                    'missing_ml_default': 0.5,
+                    'missing_rl_default': 0.5,
+                    'missing_regime_default': 0.3,
+                },
+                'regime_multipliers': {
+                    'neutral': 1.0,
+                },
+            },
+        })
+        rule = RiskRewardRatioRule(config=config)
+        portfolio = MockPortfolioManager()
+        signal = {
+            'symbol': 'BTC/USDT',
+            'entry': 100,
+            'stop': 99,
+            'target': 100.9,  # R/R = 0.9 (>= dynamic 0.8, but < floor 1.0)
+            'regime_name': 'neutral',
+            'strategy_min_rr': 0.5,
+        }
+
+        target_rr = rule._calculate_dynamic_target(signal)
+        assert target_rr == pytest.approx(0.8, rel=1e-6)
+
+        is_valid, reason = rule.validate(signal, portfolio)
+        assert is_valid is False
+        assert signal.get("prefill_rr_reason") == "rr_below_1"
+        assert signal.get("prefill_rr_reason_code") == "risk.rr.pre_fill.rr_below_1"
+        assert signal.get("prefill_rr_meta", {}).get("action") == "reject"
+        assert "hard floor" in reason.lower()
+
+    def test_prefill_rr_reason_code_marks_dynamic_target_rejections(self):
+        config = RiskConfiguration({
+            'equity_usd': 10000,
+            'rr_dynamic': {
+                'enabled': True,
+                'base_target_rr': 1.5,
+                'lower_bound_rr': 1.2,
+                'upper_bound_rr': 2.0,
+                'weights': {
+                    'ml_confidence': 0.0,
+                    'rl_agreement': 0.0,
+                    'regime_clarity': 0.0,
+                    'volume_strength': 0.0,
+                    'momentum_strength': 0.0,
+                },
+                'fallback': {
+                    'missing_ml_default': 0.5,
+                    'missing_rl_default': 0.5,
+                    'missing_regime_default': 0.3,
+                },
+                'regime_multipliers': {
+                    'neutral': 1.0,
+                },
+            },
+        })
+        rule = RiskRewardRatioRule(config=config)
+        portfolio = MockPortfolioManager()
+        signal = {
+            'symbol': 'BTC/USDT',
+            'entry': 100,
+            'stop': 99,
+            'target': 101.3,  # R/R = 1.3 (< required 1.5, > floor 1.0)
+            'regime_name': 'neutral',
+            'strategy_min_rr': 0.5,
+        }
+
+        is_valid, _ = rule.validate(signal, portfolio)
+        assert is_valid is False
+        assert signal.get("prefill_rr_reason") == "rr_below_required"
+        assert signal.get("prefill_rr_reason_code") == "risk.rr.pre_fill.rr_below_required"
+
 
 class TestRegimeMultipliers:
     """Test regime-specific multipliers."""

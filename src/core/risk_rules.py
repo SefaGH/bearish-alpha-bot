@@ -18,6 +18,31 @@ from datetime import datetime, timezone
 import logging
 
 from core.logger import get_current_run_id
+try:
+    from core.rr_guard import (
+        RR_REASON_BELOW_1,
+        RR_REASON_BELOW_REQUIRED,
+        build_prefill_rr_reason_code,
+        evaluate_rr_gate,
+    )
+except ModuleNotFoundError:
+    try:
+        from src.core.rr_guard import (
+            RR_REASON_BELOW_1,
+            RR_REASON_BELOW_REQUIRED,
+            build_prefill_rr_reason_code,
+            evaluate_rr_gate,
+        )
+    except ModuleNotFoundError as e:
+        if e.name in ("src", "src.core", "src.core.rr_guard"):
+            from .rr_guard import (
+                RR_REASON_BELOW_1,
+                RR_REASON_BELOW_REQUIRED,
+                build_prefill_rr_reason_code,
+                evaluate_rr_gate,
+            )
+        else:
+            raise
 
 logger = logging.getLogger(__name__)
 
@@ -159,9 +184,82 @@ class BaseRiskRule(ABC):
 class VolumeAwarePositionSizingRule(BaseRiskRule):
     """Adjusts sizing and R/R distances based on volume bucket context."""
 
-    def __init__(self, risk_matrix: Dict[str, Dict[str, float]], rule_name: str = None):
+    def __init__(
+        self,
+        risk_matrix: Dict[str, Dict[str, float]],
+        rule_name: str = None,
+        risk_config: Optional[Any] = None,
+    ):
         super().__init__(rule_name or "VolumeAwarePositionSizingRule")
-        self.risk_matrix = risk_matrix or {}
+        self.risk_matrix = self._normalize_matrix(risk_matrix)
+        self.risk_config = risk_config
+
+    @staticmethod
+    def _normalize_matrix(raw_matrix: Any) -> Dict[str, Dict[str, float]]:
+        if not isinstance(raw_matrix, dict):
+            return {}
+        normalized: Dict[str, Dict[str, float]] = {}
+        for raw_bucket, raw_cfg in raw_matrix.items():
+            if not isinstance(raw_cfg, dict):
+                continue
+            bucket = str(raw_bucket or "").strip().upper()
+            if not bucket:
+                continue
+            normalized[bucket] = dict(raw_cfg)
+        return normalized
+
+    @staticmethod
+    def _resolve_strategy_name(signal: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(signal, dict):
+            return None
+        for key in ("strategy_name", "strategy", "source_strategy"):
+            raw = signal.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        meta = signal.get("meta")
+        if isinstance(meta, dict):
+            for key in ("strategy_name", "strategy", "base_strategy", "source_strategy"):
+                raw = meta.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+        return None
+
+    def _resolve_strategy_override_matrix(self, strategy_name: Optional[str]) -> Dict[str, Dict[str, float]]:
+        if not strategy_name:
+            return {}
+        if self.risk_config is None or not hasattr(self.risk_config, "get_strategy_profile"):
+            return {}
+        try:
+            profile = self.risk_config.get_strategy_profile(strategy_name)
+        except Exception:
+            return {}
+        if not isinstance(profile, dict):
+            return {}
+
+        raw_override = profile.get("volume_bucket_risk_matrix")
+        if raw_override is None:
+            raw_override = profile.get("volume_override")
+        return self._normalize_matrix(raw_override)
+
+    def _resolve_effective_matrix(self, signal: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, float]], str, Optional[str]]:
+        strategy_name = self._resolve_strategy_name(signal)
+        override_matrix = self._resolve_strategy_override_matrix(strategy_name)
+        if not override_matrix:
+            return self.risk_matrix, "global", strategy_name
+
+        effective_matrix = deepcopy(self.risk_matrix)
+        for bucket, bucket_cfg in override_matrix.items():
+            base_cfg = effective_matrix.get(bucket)
+            if isinstance(base_cfg, dict):
+                merged_cfg = dict(base_cfg)
+                merged_cfg.update(bucket_cfg)
+                effective_matrix[bucket] = merged_cfg
+            else:
+                effective_matrix[bucket] = dict(bucket_cfg)
+
+        strategy_key = str(strategy_name or "").strip().lower()
+        source = f"strategy_profile:{strategy_key}" if strategy_key else "strategy_profile"
+        return effective_matrix, source, strategy_name
 
     def validate(self, signal: Dict, portfolio_manager) -> Tuple[bool, str]:
         if not self.enabled:
@@ -172,10 +270,11 @@ class VolumeAwarePositionSizingRule(BaseRiskRule):
             return (True, "Volume context not analyzer-derived; skipping")
 
         bucket = (signal.get('volume_bucket') or '').upper()
-        if not bucket or not self.risk_matrix:
+        effective_matrix, matrix_source, strategy_name = self._resolve_effective_matrix(signal)
+        if not bucket or not effective_matrix:
             return (True, "No volume bucket provided; skipping")
 
-        cfg = self.risk_matrix.get(bucket) or self.risk_matrix.get('NORMAL')
+        cfg = effective_matrix.get(bucket) or effective_matrix.get('NORMAL')
         if not cfg:
             return (True, "No volume matrix configured; skipping")
 
@@ -252,6 +351,8 @@ class VolumeAwarePositionSizingRule(BaseRiskRule):
                     'run_id': run_id,
                     'symbol': signal.get('symbol'),
                     'timeframe': signal.get('timeframe') or signal.get('tf'),
+                    'strategy_name': strategy_name,
+                    'volume_matrix_source': matrix_source,
                     'volume_bucket': bucket,
                     'position_size_multiplier': cfg.get('position_size_multiplier', 1.0),
                     'stop_loss_multiplier': cfg.get('stop_loss_multiplier', 1.0),
@@ -662,6 +763,30 @@ class RiskRewardRatioRule(BaseRiskRule):
             signal['dynamic_rr_target'] = target_rr
             signal.setdefault('rr_ratio', calculated_rr)
             signal['calculated_rr_ratio'] = calculated_rr
+            rr_gate = evaluate_rr_gate(
+                calculated_rr,
+                rr_required=target_rr,
+                rr_required_source="dynamic_rr_target",
+                rr_floor=1.0,
+                action_on_fail="reject",
+            )
+            prefill_reason_code = build_prefill_rr_reason_code(rr_gate.get("reason_code"))
+            prefill_meta = {
+                "rr_actual": rr_gate.get("rr_actual"),
+                "rr_required": rr_gate.get("rr_required"),
+                "rr_required_source": rr_gate.get("rr_required_source"),
+                "rr_floor": rr_gate.get("rr_floor"),
+                "action": rr_gate.get("action"),
+                "reason_code": rr_gate.get("reason_code"),
+                "prefill_reason_code": prefill_reason_code,
+            }
+            signal["prefill_rr_meta"] = prefill_meta
+            signal["prefill_rr_reason_code"] = prefill_reason_code
+            signal["prefill_rr_reason"] = rr_gate.get("reason_code")
+            signal["prefill_rr_actual"] = rr_gate.get("rr_actual")
+            signal["prefill_rr_required"] = rr_gate.get("rr_required")
+            signal["prefill_rr_required_source"] = rr_gate.get("rr_required_source")
+            signal["prefill_rr_floor"] = rr_gate.get("rr_floor")
             
             # Enhanced diagnostic logging
             logger.info(f"📊 [R/R Analysis] {symbol}:")
@@ -686,10 +811,35 @@ class RiskRewardRatioRule(BaseRiskRule):
                        f"Mom={mom_str if isinstance(mom_str, str) else f'{mom_str:.2f}'}")
             
             # Make decision
-            if calculated_rr < target_rr:
-                reason = (f"Risk/reward ratio {calculated_rr:.2f} is below dynamic target {target_rr:.2f} "
-                         f"(Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}%)")
-                logger.warning(f"🚫 [RiskRewardRatioRule] REJECTED {symbol}: {reason}")
+            rr_reason_code = rr_gate.get("reason_code")
+            if rr_reason_code:
+                if rr_reason_code == RR_REASON_BELOW_1:
+                    reason = (
+                        f"Risk/reward ratio {calculated_rr:.2f} is below hard floor "
+                        f"{float(rr_gate.get('rr_floor') or 1.0):.2f} "
+                        f"(dynamic target {target_rr:.2f}; Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}%)"
+                    )
+                elif rr_reason_code == RR_REASON_BELOW_REQUIRED:
+                    reason = (
+                        f"Risk/reward ratio {calculated_rr:.2f} is below dynamic target {target_rr:.2f} "
+                        f"(Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}%)"
+                    )
+                else:
+                    reason = (
+                        f"Risk/reward ratio {calculated_rr:.2f} failed pre-fill RR gate "
+                        f"(Risk: {risk_pct:.1f}%, Reward: {reward_pct:.1f}%)"
+                    )
+                logger.warning(
+                    "🚫 [RiskRewardRatioRule] REJECTED %s: %s | reason_code=%s prefill_reason_code=%s "
+                    "rr_actual=%.3f rr_required=%.3f rr_floor=%.3f",
+                    symbol,
+                    reason,
+                    rr_reason_code,
+                    prefill_reason_code or "na",
+                    float(rr_gate.get("rr_actual") or 0.0),
+                    float(rr_gate.get("rr_required") or 0.0),
+                    float(rr_gate.get("rr_floor") or 0.0),
+                )
                 return (False, reason)
             else:
                 logger.info(f"✅ [RiskRewardRatioRule] PASSED {symbol}: R/R {calculated_rr:.2f} >= {target_rr:.2f}")

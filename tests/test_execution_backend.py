@@ -116,6 +116,26 @@ class FakeLimitTimeoutPeakDistanceSequenceCcxtClient(FakeLimitTimeoutCcxtClient)
         return {"last": 100.0, "bid": 99.99, "ask": 100.01}
 
 
+class FakeLimitTimeoutSlippageGuardBlockCcxtClient(FakeLimitTimeoutCcxtClient):
+    def ticker(self, symbol: str):
+        # LONG fallback quote is ask=100.60 => adverse 60 bps from entry=100.
+        return {"last": 100.0, "bid": 99.4, "ask": 100.6}
+
+
+class FakeLimitTimeoutSlippageGuardAllowCcxtClient(FakeLimitTimeoutCcxtClient):
+    def ticker(self, symbol: str):
+        # LONG fallback quote is ask=100.01 => adverse 1 bps from entry=100.
+        return {"last": 100.0, "bid": 99.99, "ask": 100.01}
+
+    def create_order(self, symbol: str, side: str, type_: str, amount: float, price=None, params=None):
+        self.create_order_calls.append(
+            {"symbol": symbol, "side": side, "type": type_, "amount": amount, "price": price, "params": params or {}}
+        )
+        if type_ == "limit":
+            return {"id": "exch-limit-1", "status": "open", "filled": 0.0, "amount": amount, "price": price}
+        return {"id": "exch-market-1", "average": 100.01, "filled": amount, "status": "closed"}
+
+
 class FakeStopHitCancelConfirmedCcxtClient(FakeLimitTimeoutCcxtClient):
     def ticker(self, symbol: str):
         # LONG stop should trigger immediately (last <= stop).
@@ -662,6 +682,94 @@ def test_limit_timeout_market_fallback_soft_gate_tracks_peak_distance(clean_env)
     soft = result.get("fallback_soft_gate") or {}
     assert "peak_distance" in (soft.get("fails") or [])
     assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_market_fallback_slippage_guard_blocks(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutSlippageGuardBlockCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": True,
+                    "fallback_slippage_guard_enabled": True,
+                    "fallback_slippage_guard_floor_bps": 5.0,
+                    "fallback_slippage_guard_min_bps": 5.0,
+                    "fallback_slippage_guard_max_bps": 5.0,
+                    "fallback_slippage_guard_atr_k": 0.0,
+                    "fallback_slippage_guard_spread_m": 0.0,
+                },
+                "_internal": {"fallback_soft_gate": {"enabled": False}},
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is False
+    assert str(result.get("reason") or "").startswith("ABORT:FALLBACK_SLIPPAGE_GUARD:")
+    assert result.get("reason_code") == "execution.fallback.limit_timeout.slippage_guard_blocked"
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback_slippage_guard_blocked"
+    guard = result.get("fallback_slippage_guard") or {}
+    assert guard.get("reason") == "fallback_slippage_guard_kill"
+    assert float(guard.get("adverse_bps") or 0.0) > float(guard.get("kill_bps") or 0.0)
+    assert [c["type"] for c in client.create_order_calls] == ["limit"]
+
+
+def test_limit_timeout_market_fallback_slippage_guard_allows(clean_env):
+    from src.core.order_manager import SmartOrderManager
+
+    os.environ["TRADING_MODE"] = "live"
+    os.environ["EXECUTION_BACKEND"] = "ccxt"
+    os.environ["BINGX_ENV"] = "vst"
+
+    client = FakeLimitTimeoutSlippageGuardAllowCcxtClient()
+    om = SmartOrderManager(market_data_pipeline=None, exchange_clients={"bingx": client})
+
+    result = asyncio.run(
+        om.place_order(
+            {
+                "symbol": "BTC/USDT:USDT",
+                "side": "long",
+                "amount": 0.01,
+                "exchange": "bingx",
+                "signal": {"entry": 100.0, "stop": 90.0},
+                "limit_price": 99.5,
+                "execution_params": {
+                    "timeout_seconds": 0,
+                    "market_fallback_on_timeout_enabled": True,
+                    "fallback_slippage_guard_enabled": True,
+                    "fallback_slippage_guard_floor_bps": 5.0,
+                    "fallback_slippage_guard_min_bps": 5.0,
+                    "fallback_slippage_guard_max_bps": 5.0,
+                    "fallback_slippage_guard_atr_k": 0.0,
+                    "fallback_slippage_guard_spread_m": 0.0,
+                },
+                "_internal": {"fallback_soft_gate": {"enabled": False}},
+            },
+            execution_algo="limit",
+        )
+    )
+
+    assert result["success"] is True
+    assert result.get("reason_code") == "execution.fallback.limit_timeout.market_fallback"
+    assert result.get("fallback_reason") == "limit_timeout_market_fallback"
+    guard = result.get("fallback_slippage_guard") or {}
+    assert guard.get("reason") == "fallback_slippage_guard_pass"
+    assert [c["type"] for c in client.create_order_calls] == ["limit", "market"]
 
 
 def test_limit_stop_hit_abort_requires_cancel_confirmation(clean_env):

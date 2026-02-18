@@ -294,3 +294,32 @@ async def test_low_volume_downtrend_requires_strong_reversal_and_allows_extreme_
     assert result['status'] in {'accepted', 'dropped'}
     assert result.get('stage') != 'volume_gating'
 
+
+def test_band_snapshot_mismatch_counter_tracks_inconsistency(mock_deps):
+    pm, rm, mdp, va = mock_deps
+
+    coordinator = StrategyCoordinator(
+        pm,
+        rm,
+        mdp,
+        config={"signals": {"band_snapshot_consistency": {"mismatch_tolerance_abs": 1e-6}}},
+        volume_analyzer=va,
+    )
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "strategy_name": "mean_reversion",
+        "vwap_lower": 100.0,
+        "vwap_upper": 110.0,
+    }
+    snapshot = {
+        "source": "controller_post_overlay",
+        "lower": 101.0,
+        "upper": 109.0,
+    }
+
+    coordinator._record_band_snapshot_consistency(signal, snapshot)
+
+    assert coordinator.processing_stats.get("band_snapshot_checks") == 1
+    assert coordinator.processing_stats.get("band_snapshot_mismatch_count") == 1
+

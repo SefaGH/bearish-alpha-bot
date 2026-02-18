@@ -65,3 +65,40 @@ def test_quality_strong_setup_high_score_with_rr_bonus():
     assert result["value"] >= 0.9
     assert result["value"] <= 1.0
     assert result["rr_adjustment"] > 1.0
+
+
+def test_quality_excludes_unhealthy_ppo_component():
+    coord = _make_coordinator()
+    signal = {
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "ppo_long_score": 0.0,
+        "ppo_meta": {"reason": "health_guard_fast", "guard_active": True, "health_ok": False},
+    }
+
+    result = coord._compute_signal_quality(signal)
+
+    assert result["value"] == pytest.approx(0.5, rel=1e-3)
+    assert "ppo_rl" in result.get("excluded_components", [])
+    assert result.get("component_health", {}).get("ppo_rl", {}).get("healthy") is False
+    assert result.get("component_health", {}).get("ppo_rl", {}).get("included") is False
+
+
+def test_quality_excludes_unhealthy_ml_component():
+    coord = _make_coordinator()
+    signal = {
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "ml_confidence": 0.1,
+        "ml_context_is_healthy": False,
+        "ml_context_reason": "ml_backend_unhealthy",
+        "ppo_long_score": 0.5,
+        "ppo_meta": {"reason": "ok", "health_ok": True},
+    }
+
+    result = coord._compute_signal_quality(signal)
+
+    assert result["value"] == pytest.approx(0.5, rel=1e-3)
+    assert "ml" in result.get("excluded_components", [])
+    assert result.get("component_health", {}).get("ml", {}).get("healthy") is False
+    assert result.get("component_health", {}).get("ml", {}).get("included") is False

@@ -56,6 +56,12 @@ async def test_process_strategy_signal_logs_enqueued_only_on_queue_acceptance(ca
         "target": 110.0,
         "timeframe": "5m",
         "priority": 2,
+        "band_snapshot": {
+            "source": "controller_post_overlay",
+            "lower": 99.1,
+            "upper": 101.2,
+            "vwap": 100.0,
+        },
     }
 
     coordinator._enrich_signal.return_value = dict(base_signal)
@@ -66,6 +72,8 @@ async def test_process_strategy_signal_logs_enqueued_only_on_queue_acceptance(ca
     assert result["status"] == "accepted"
     assert " ENQUEUED | " in caplog.text
     assert " REJECTED | " not in caplog.text
+    assert "band_source=controller_post_overlay" in caplog.text
+    assert "band_lower=99.1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -80,6 +88,12 @@ async def test_process_strategy_signal_logs_rejected_only_on_queue_rejection(cap
         "target": 110.0,
         "timeframe": "5m",
         "priority": 2,
+        "band_snapshot": {
+            "source": "controller_post_overlay",
+            "lower": 99.1,
+            "upper": 101.2,
+            "vwap": 100.0,
+        },
     }
 
     coordinator._enrich_signal.return_value = dict(base_signal)
@@ -91,3 +105,4 @@ async def test_process_strategy_signal_logs_rejected_only_on_queue_rejection(cap
     assert "queue_limit" in (result.get("reason") or "")
     assert " REJECTED | reason=queue_limit " in caplog.text
     assert " ENQUEUED | " not in caplog.text
+    assert "band_source=controller_post_overlay" in caplog.text

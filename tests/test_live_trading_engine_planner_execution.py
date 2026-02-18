@@ -168,3 +168,153 @@ async def test_execute_signal_postfill_rr_early_exit_closes_position(monkeypatch
     assert called["exit_reason"] == "postfill_rr_below_required"
     assert result["close_result"]["success"] is True
     assert "pos-1" not in engine.active_positions
+
+
+def test_canary_metrics_snapshot_aggregates_postfill_same_signal_band_and_slippage():
+    portfolio_manager = DummyPortfolioManager(equity=100.0)
+    risk_manager = DummyRiskManager()
+    order_manager = DummyOrderManager()
+    position_manager = DummyPositionManager()
+
+    engine = LiveTradingEngine(
+        mode=TradingMode.PAPER.value,
+        portfolio_manager=portfolio_manager,
+        risk_manager=risk_manager,
+        order_manager=order_manager,
+        position_manager=position_manager,
+        exchange_clients={"binance": object()},
+    )
+
+    engine.config = {
+        "monitoring": {
+            "canary_metrics": {
+                "enabled": True,
+                "interval_sec": 300,
+                "canary_symbols": ["BTC/USDT:USDT"],
+            }
+        }
+    }
+
+    engine._record_execution_quality_sample(
+        signal={"symbol": "BTC/USDT:USDT"},
+        execution_result={"slippage": 0.0004},
+        postfill_early_exit=True,
+    )
+    engine._record_execution_quality_sample(
+        signal={"symbol": "BTC/USDT:USDT"},
+        execution_result={"slippage": 0.0001},
+        postfill_early_exit=False,
+    )
+    engine._record_execution_quality_sample(
+        signal={"symbol": "ETH/USDT:USDT"},
+        execution_result={"slippage": 0.0009},
+        postfill_early_exit=False,
+    )
+
+    class StubCoordinator:
+        def get_duplicate_prevention_stats(self):
+            return {
+                "total_signals_processed": 20,
+                "rejected_by_same_signal": 2,
+                "same_signal_repeat_rate": 10.0,
+            }
+
+        def get_processing_stats(self):
+            return {
+                "stats": {
+                    "band_snapshot_mismatch_count": 3,
+                    "band_snapshot_checks": 50,
+                }
+            }
+
+    engine.strategy_coordinator = StubCoordinator()
+
+    snapshot = engine._build_canary_metrics_snapshot()
+
+    assert isinstance(snapshot, dict)
+    assert snapshot["scope"]["kind"] == "canary_symbols"
+    assert snapshot["entries_total"] == 2
+    assert snapshot["postfill_early_exit_count"] == 1
+    assert snapshot["postfill_exit_rate"] == pytest.approx(0.5, rel=1e-6)
+    assert snapshot["same_signal_repeat_rate"] == pytest.approx(10.0, rel=1e-6)
+    assert snapshot["band_snapshot_mismatch_count"] == 3
+    assert snapshot["band_snapshot_checks"] == 50
+    assert snapshot["slippage_sample_count"] == 2
+    assert snapshot["slippage_p95_bps"] == pytest.approx(3.85, rel=1e-3)
+
+
+def test_canary_metrics_snapshot_alert_thresholds_trigger_critical():
+    portfolio_manager = DummyPortfolioManager(equity=100.0)
+    risk_manager = DummyRiskManager()
+    order_manager = DummyOrderManager()
+    position_manager = DummyPositionManager()
+
+    engine = LiveTradingEngine(
+        mode=TradingMode.PAPER.value,
+        portfolio_manager=portfolio_manager,
+        risk_manager=risk_manager,
+        order_manager=order_manager,
+        position_manager=position_manager,
+        exchange_clients={"binance": object()},
+    )
+
+    engine.config = {
+        "monitoring": {
+            "canary_metrics": {
+                "enabled": True,
+                "interval_sec": 300,
+                "canary_symbols": ["BTC/USDT:USDT"],
+                "alerts": {
+                    "enabled": True,
+                    "min_entries": 1,
+                    "min_same_signal_total": 1,
+                    "min_band_checks": 1,
+                    "min_slippage_samples": 1,
+                    "thresholds": {
+                        "postfill_exit_rate": {"warning": 0.20, "critical": 0.35},
+                        "same_signal_repeat_rate": {"warning": 5.0, "critical": 10.0},
+                        "band_snapshot_mismatch_rate": {"warning": 0.02, "critical": 0.05},
+                        "slippage_p95_bps": {"warning": 2.0, "critical": 4.0},
+                    },
+                },
+            }
+        }
+    }
+
+    engine._record_execution_quality_sample(
+        signal={"symbol": "BTC/USDT:USDT"},
+        execution_result={"slippage": 0.0005},  # 5 bps
+        postfill_early_exit=True,
+    )
+
+    class StubCoordinator:
+        def get_duplicate_prevention_stats(self):
+            return {
+                "total_signals_processed": 10,
+                "rejected_by_same_signal": 2,
+                "same_signal_repeat_rate": 20.0,
+            }
+
+        def get_processing_stats(self):
+            return {
+                "stats": {
+                    "band_snapshot_mismatch_count": 1,
+                    "band_snapshot_checks": 5,
+                }
+            }
+
+    engine.strategy_coordinator = StubCoordinator()
+
+    snapshot = engine._build_canary_metrics_snapshot()
+
+    assert isinstance(snapshot, dict)
+    assert snapshot["alert_status"] == "critical"
+    assert snapshot["alert_count"] == 4
+    alert_meta = snapshot.get("alerts", {})
+    assert alert_meta.get("evaluated_metrics") == 4
+
+    reason_codes = {item.get("reason_code") for item in alert_meta.get("alerts", [])}
+    assert "monitoring.canary.postfill_exit_rate.critical" in reason_codes
+    assert "monitoring.canary.same_signal_repeat_rate.critical" in reason_codes
+    assert "monitoring.canary.band_snapshot_mismatch_rate.critical" in reason_codes
+    assert "monitoring.canary.slippage_p95_bps.critical" in reason_codes

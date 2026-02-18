@@ -56,7 +56,8 @@ async def test_strategy_coordinator_initializes_ppo_adapter_when_ml_ready(monkey
     coordinator.on_ml_components_connected()
 
     assert isinstance(coordinator.ppo_adapter, _StubAdapter)
-    assert created['cfg'] == cfg['ml']['reinforcement_learning']
+    assert created['cfg']['ppo_enabled'] is True
+    assert created['cfg']['ppo_mode'] == 'apply'
     assert created['market']
     assert created['features']
 
@@ -106,6 +107,39 @@ async def test_apply_ppo_long_filter_triggers_lazy_initialization(monkeypatch):
     assert 'ppo_lookback_meta' in signal
     lookback_meta = cast(Dict[str, Any], signal['ppo_lookback_meta'])
     assert lookback_meta['overall']['price_change_pct'] == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
+async def test_apply_ppo_long_filter_shadow_mode_neutralizes_decision(monkeypatch):
+    class _StubAdapter:
+        async def get_long_score(self, symbol, **_kwargs):
+            return 0.9, {'reason': 'ok', 'symbol': symbol, 'confidence': 0.8}
+
+    stub = _StubAdapter()
+    monkeypatch.setattr('core.strategy_coordinator.PPOTradingAdapter', lambda *a, **k: stub, raising=False)
+
+    coordinator = StrategyCoordinator(
+        portfolio_manager=_DummyPortfolioManager(),
+        risk_manager=_DummyRiskManager(),
+        market_data_pipeline=object(),
+        config={
+            "ml": {
+                "governance": {"ppo_mode": "shadow"},
+                "reinforcement_learning": {"ppo_enabled": True},
+            }
+        },
+    )
+    coordinator.feature_pipeline = object()
+
+    signal = {'side': 'buy', 'symbol': 'BTC/USDT'}
+    await coordinator._apply_ppo_long_filter(signal)
+
+    assert signal['ppo_long_score'] == pytest.approx(0.9)
+    assert signal['ppo_meta']['governance_mode'] == 'shadow'
+    assert signal['ppo_decision_effective'] is False
+    assert signal['ppo_shadow_action'] == 'buy'
+    assert 'rl_recommendation' not in signal
+    assert not hasattr(coordinator, '_last_rl_decision')
 
 
 @pytest.mark.asyncio
@@ -164,6 +198,55 @@ async def test_enrich_signal_for_dynamic_rr_skips_multiplier_when_ppo_inactive()
     )
 
     assert enriched["ppo_rr_multiplier"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_enrich_signal_for_dynamic_rr_shadow_mode_neutralizes_ppo_effects():
+    coordinator = StrategyCoordinator(
+        portfolio_manager=_DummyPortfolioManager(),
+        risk_manager=_DummyRiskManager(),
+        market_data_pipeline=None,
+        config={
+            "ml": {
+                "governance": {"ppo_mode": "shadow"},
+                "reinforcement_learning": {"ppo_enabled": True},
+            }
+        },
+    )
+
+    enriched = await coordinator._enrich_signal_for_dynamic_rr(
+        {
+            "side": "buy",
+            "symbol": "BTC/USDT:USDT",
+            "ppo_long_score": 0.0,
+            "ppo_meta": {"reason": "ok", "guard_active": False},
+        }
+    )
+
+    assert enriched["rl_is_agree"] is False
+    assert enriched["rl_action_prob"] == pytest.approx(0.5)
+    assert enriched["ppo_rr_multiplier"] == pytest.approx(1.0)
+    assert enriched["ppo_rr_reason_code"] == "ml.governance.ppo.shadow.rr_neutralized"
+
+
+def test_compute_ppo_position_multiplier_shadow_mode_returns_neutral():
+    coordinator = StrategyCoordinator(
+        portfolio_manager=_DummyPortfolioManager(),
+        risk_manager=_DummyRiskManager(),
+        market_data_pipeline=None,
+        config={
+            "ml": {
+                "governance": {"ppo_mode": "shadow"},
+                "reinforcement_learning": {"ppo_enabled": True},
+            }
+        },
+    )
+
+    signal = {"side": "buy", "ppo_long_score": 0.95}
+    multiplier = coordinator._compute_ppo_position_multiplier(signal)
+
+    assert multiplier == pytest.approx(1.0)
+    assert signal["ppo_position_reason_code"] == "ml.governance.ppo.shadow.size_neutralized"
 
 
 @pytest.mark.asyncio

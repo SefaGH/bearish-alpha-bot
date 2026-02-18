@@ -389,6 +389,193 @@ async def test_quality_below_threshold_emits_waiting_room_drop(caplog, monkeypat
     assert data.get("drop_kind") == "sanity_guard"
 
 
+@pytest.mark.asyncio
+async def test_quality_gate_rejects_before_risk_and_emits_standard_reason(caplog, monkeypatch):
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        config={
+            "risk": {"queue": {"ttl_seconds": 5}},
+            "signals": {"signal_scoring": {"min_quality_score": 0.55}},
+        },
+    )
+    caplog.set_level(logging.INFO)
+
+    async def fake_assess(_signal: dict, _strategy_name: str):
+        raise AssertionError("_assess_signal_risk should not run when quality gate rejects")
+
+    async def fake_conflicts(_signal: dict):
+        return {"has_conflict": False, "conflicts": [], "conflicting_signals": []}
+
+    monkeypatch.setattr(coordinator, "_assess_signal_risk", fake_assess)
+    monkeypatch.setattr(coordinator, "_check_signal_conflicts", fake_conflicts)
+    monkeypatch.setattr(coordinator, "validate_duplicate", lambda *_args, **_kwargs: (True, "ok"))
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "intent": "entry",
+        "timestamp": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+        "entry": 100.0,
+        "stop": 90.0,
+        "target": 110.0,
+        "volume_bucket": "NORMAL",
+        "ml_confidence": 0.1,
+        "volume_strength": 0.1,
+        "momentum_strength": 0.1,
+        "regime_confidence": 0.1,
+        "ppo_long_score": 0.1,
+        "ppo_meta": {"reason": "ok", "health_ok": True},
+        "rl_is_agree": False,
+    }
+
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    assert result["status"] == "rejected"
+    assert result.get("reason_code") == "quality.below_min_threshold"
+    assert result.get("stage") == "quality_gate"
+    assert coordinator.processing_stats.get("quality_gate_rejections", 0) >= 1
+
+    drop_events = [r.message for r in caplog.records if str(r.message).startswith("waiting_room_drop ")]
+    assert drop_events, "Expected waiting_room_drop telemetry for quality gate reject"
+    _, json_blob = drop_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("reason_code") == "quality.below_min_threshold"
+    assert data.get("drop_kind") == "quality_gate"
+    assert data.get("drop_reason") == "quality.below_min_threshold"
+
+
+@pytest.mark.asyncio
+async def test_prefill_rr_reject_emits_waiting_room_drop(caplog, monkeypatch):
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        config={"risk": {"queue": {"ttl_seconds": 5}}},
+    )
+    caplog.set_level(logging.INFO)
+
+    async def fake_assess(_signal: dict, _strategy_name: str):
+        return {
+            "acceptable": False,
+            "reason": "Risk/reward ratio 1.20 is below dynamic target 1.58",
+            "reason_code": "risk.rr.pre_fill.rr_below_required",
+            "metrics": {
+                "rr_gate_prefill": {
+                    "rr_actual": 1.2,
+                    "rr_required": 1.58,
+                    "rr_required_source": "dynamic_rr_target",
+                    "rr_floor": 1.0,
+                    "action": "reject",
+                    "reason_code": "rr_below_required",
+                }
+            },
+        }
+
+    async def fake_conflicts(_signal: dict):
+        return {"has_conflict": False, "conflicts": [], "conflicting_signals": []}
+
+    monkeypatch.setattr(coordinator, "_assess_signal_risk", fake_assess)
+    monkeypatch.setattr(coordinator, "_check_signal_conflicts", fake_conflicts)
+    monkeypatch.setattr(coordinator, "validate_duplicate", lambda *_args, **_kwargs: (True, "ok"))
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "intent": "entry",
+        "timestamp": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+        "entry": 100.0,
+        "stop": 90.0,
+        "target": 120.0,
+        "volume_bucket": "NORMAL",
+    }
+
+    result = await coordinator.process_strategy_signal("mean_reversion", signal)
+    assert result["status"] == "rejected"
+    assert result.get("reason_code") == "risk.rr.pre_fill.rr_below_required"
+    assert result.get("stage") == "risk_assessment"
+    assert result.get("rr_actual") == pytest.approx(1.2, rel=1e-6)
+    assert result.get("rr_required") == pytest.approx(1.58, rel=1e-6)
+    assert coordinator.processing_stats.get("prefill_rr_rejections", 0) >= 1
+
+    drop_events = [r.message for r in caplog.records if str(r.message).startswith("waiting_room_drop ")]
+    assert drop_events, "Expected waiting_room_drop telemetry for pre-fill RR gate reject"
+    _, json_blob = drop_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("reason_code") == "risk.rr.pre_fill.rr_below_required"
+    assert data.get("drop_kind") == "pre_fill_rr_gate"
+    assert data.get("rr_reason_code") == "rr_below_required"
+    assert data.get("rr_actual") == pytest.approx(1.2, rel=1e-6)
+    assert data.get("rr_required") == pytest.approx(1.58, rel=1e-6)
+    assert data.get("rr_required_source") == "dynamic_rr_target"
+
+
+@pytest.mark.asyncio
+async def test_incubator_replay_applies_same_quality_gate_policy(caplog, monkeypatch):
+    coordinator = StrategyCoordinator(
+        DummyPortfolioManager(),
+        risk_manager=object(),
+        config={
+            "risk": {"queue": {"ttl_seconds": 5}},
+            "signals": {"signal_scoring": {"min_quality_score": 0.55}},
+        },
+    )
+    caplog.set_level(logging.INFO)
+
+    async def fake_can_accept(_payload):
+        return True, None, None
+
+    async def fake_assess(_signal: dict, _strategy_name: str):
+        raise AssertionError("Risk should not run when replay is blocked by quality gate")
+
+    async def fake_conflicts(_signal: dict):
+        return {"has_conflict": False, "conflicts": [], "conflicting_signals": []}
+
+    monkeypatch.setattr(coordinator.signal_queue, "can_accept", fake_can_accept)
+    monkeypatch.setattr(coordinator, "_assess_signal_risk", fake_assess)
+    monkeypatch.setattr(coordinator, "_check_signal_conflicts", fake_conflicts)
+    monkeypatch.setattr(coordinator, "validate_duplicate", lambda *_args, **_kwargs: (True, "ok"))
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "side": "long",
+        "timeframe": "5m",
+        "intent": "entry",
+        "timestamp": datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+        "entry": 100.0,
+        "stop": 90.0,
+        "target": 110.0,
+        "volume_bucket": "NORMAL",
+        "ml_confidence": 0.1,
+        "volume_strength": 0.1,
+        "momentum_strength": 0.1,
+        "regime_confidence": 0.1,
+        "ppo_long_score": 0.1,
+        "ppo_meta": {"reason": "ok", "health_ok": True},
+        "rl_is_agree": False,
+    }
+
+    incubated = await coordinator.incubate_signal(
+        strategy_name="mean_reversion",
+        signal=signal,
+        reason_code="queue.capacity",
+        refresh_policy="NONE",
+        stage="queue",
+    )
+    dedupe_key = incubated["dedupe_key"]
+    coordinator._incubator_items[dedupe_key]["next_check_at_ms"] = 0
+
+    processed = await coordinator.incubator_tick(max_items=10, time_budget_ms=1000)
+    assert processed >= 1
+    assert dedupe_key not in coordinator._incubator_items
+
+    outcome_events = [r.message for r in caplog.records if str(r.message).startswith("waiting_room_outcome ")]
+    assert outcome_events, "Expected waiting_room_outcome for replay rejection"
+    _, json_blob = outcome_events[-1].split(" ", 1)
+    data = json.loads(json_blob)
+    assert data.get("outcome") == "failed_replay"
+    assert data.get("final_reason_code") == "quality.below_min_threshold"
+
 def test_low_vol_tight_stop_default_ttl_is_5_minutes():
     coordinator = StrategyCoordinator(
         DummyPortfolioManager(),

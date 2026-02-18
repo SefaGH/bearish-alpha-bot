@@ -26,6 +26,21 @@ class DummyPositionManager:
         return {"success": True, "position_id": "test"}
 
 
+class DummyStrategyProfileRiskConfig:
+    def get_strategy_profile(self, strategy_name):
+        key = str(strategy_name or "").strip().lower()
+        if key != "mean_reversion":
+            return {}
+        return {
+            "volume_bucket_risk_matrix": {
+                "LOW": {
+                    "stop_loss_multiplier": 1.05,
+                    "take_profit_multiplier": 0.97,
+                }
+            }
+        }
+
+
 @pytest.mark.asyncio
 async def test_volume_bucket_risk_logs_pre_post_caps(caplog):
     rule = VolumeAwarePositionSizingRule(
@@ -68,6 +83,52 @@ async def test_volume_bucket_risk_logs_pre_post_caps(caplog):
     assert pytest.approx(payload["scaled_notional"], rel=1e-3) == 150.0
     assert payload["caps_snapshot"]["heat_cap_notional"] == 80.0
     assert payload["would_breach_caps_after_volume"] is True
+
+
+def test_volume_bucket_risk_uses_strategy_profile_override(caplog):
+    rule = VolumeAwarePositionSizingRule(
+        {
+            "LOW": {
+                "position_size_multiplier": 0.5,
+                "stop_loss_multiplier": 1.3,
+                "take_profit_multiplier": 0.9,
+            },
+            "NORMAL": {
+                "position_size_multiplier": 1.0,
+                "stop_loss_multiplier": 1.0,
+                "take_profit_multiplier": 1.0,
+            },
+        },
+        risk_config=DummyStrategyProfileRiskConfig(),
+    )
+
+    signal = {
+        "symbol": "BTC/USDT:USDT",
+        "timeframe": "5m",
+        "strategy_name": "mean_reversion",
+        "volume_bucket": "LOW",
+        "volume_ctx_source": "analyzer",
+        "position_size": 1.0,
+        "stop_loss_dist": 100.0,
+        "take_profit_dist": 200.0,
+    }
+
+    with caplog.at_level(logging.INFO):
+        allowed, reason = rule.validate(signal, portfolio_manager=None)
+
+    assert allowed is True
+    assert "Applied volume bucket LOW" in reason
+    # Partial strategy override should inherit global position multiplier.
+    assert signal["position_size"] == pytest.approx(0.5)
+    assert signal["stop_loss_dist"] == pytest.approx(105.0)
+    assert signal["take_profit_dist"] == pytest.approx(194.0)
+
+    record = next(rec for rec in caplog.records if "volume_bucket_risk" in rec.getMessage())
+    payload_str = record.getMessage().split(" ", 1)[1]
+    payload = ast.literal_eval(payload_str)
+
+    assert payload["strategy_name"] == "mean_reversion"
+    assert payload["volume_matrix_source"] == "strategy_profile:mean_reversion"
 
 
 @pytest.mark.asyncio

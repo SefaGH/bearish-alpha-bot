@@ -17,6 +17,7 @@ import asyncio
 import logging
 import time
 import pandas as pd
+import numpy as np
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 from datetime import datetime, timezone
@@ -209,6 +210,14 @@ class LiveTradingEngine:
         self._executed_count = 0  # Track executed signals
         self._last_signal_time = None
         self.prod_canary_0_abort_reason: Optional[str] = None
+        self._canary_metrics_last_emit_monotonic: float = 0.0
+        self._execution_quality_counts: Dict[str, Any] = {
+            "entries_total": 0,
+            "postfill_early_exit_total": 0,
+            "entries_by_symbol": defaultdict(int),
+            "postfill_early_exit_by_symbol": defaultdict(int),
+        }
+        self._entry_slippage_bps_samples: deque[Dict[str, Any]] = deque(maxlen=4000)
 
         logger.info("LiveTradingEngine initialized")
         logger.info(f"  Mode: {mode}")
@@ -819,6 +828,7 @@ class LiveTradingEngine:
                 "disable_market_fallback_on_extreme_bucket",
                 "disable_market_fallback_on_fast_move",
                 "fallback_require_position_delta_verification",
+                "fallback_slippage_guard_enabled",
             ):
                 if execution_params.get(key) is not None:
                     continue
@@ -861,6 +871,19 @@ class LiveTradingEngine:
                 "max_bps": _safe_float_local(cfg_om.get("fallback_hard_chase_max_bps"), 60.0),
                 "atr_k": _safe_float_local(cfg_om.get("fallback_hard_chase_atr_k"), 1.5),
                 "spread_m": _safe_float_local(cfg_om.get("fallback_hard_chase_spread_m"), 2.0),
+            }
+            slippage_guard_enabled_cfg = _safe_bool(cfg_om.get("fallback_slippage_guard_enabled")) if isinstance(cfg_om, dict) else None
+            slippage_guard_cfg = {
+                "enabled": bool(slippage_guard_enabled_cfg) if slippage_guard_enabled_cfg is not None else False,
+                "floor_bps": _safe_float_local(cfg_om.get("fallback_slippage_guard_floor_bps"), 8.0),
+                "min_bps": _safe_float_local(cfg_om.get("fallback_slippage_guard_min_bps"), 5.0),
+                "max_bps": _safe_float_local(cfg_om.get("fallback_slippage_guard_max_bps"), 35.0),
+                "atr_k": _safe_float_local(cfg_om.get("fallback_slippage_guard_atr_k"), 0.5),
+                "spread_m": _safe_float_local(cfg_om.get("fallback_slippage_guard_spread_m"), 1.0),
+                "reference_mode": str(cfg_om.get("fallback_slippage_guard_reference") or "entry").strip().lower(),
+                "fail_closed_on_insufficient_context": bool(
+                    _safe_bool(cfg_om.get("fallback_slippage_guard_fail_closed_on_insufficient_context")) or False
+                ),
             }
             side_norm = str(signal.get('side', '') or '').lower()
             order_type_hint = (
@@ -1201,6 +1224,7 @@ class LiveTradingEngine:
                 "signal_entry_ref": signal.get("entry_raw") or signal.get("entry"),
                 "fallback_hard_chase": hard_chase_cfg,
                 "fallback_soft_gate": soft_gate_cfg,
+                "fallback_slippage_guard": slippage_guard_cfg,
                 "latest_strategy_state": latest_strategy_state if isinstance(latest_strategy_state, dict) else None,
             }
 
@@ -1320,7 +1344,23 @@ class LiveTradingEngine:
                         "effective_execution_algo": execution_result.get("effective_execution_algo") or execution_algo,
                         "success": bool(execution_result.get("success")),
                         "reason": execution_result.get("reason"),
+                        "reason_code": execution_result.get("reason_code"),
                         "fallback_reason": execution_result.get("fallback_reason"),
+                        "fallback_hard_chase_reason": (
+                            (execution_result.get("fallback_hard_chase") or {}).get("reason")
+                            if isinstance(execution_result.get("fallback_hard_chase"), dict)
+                            else None
+                        ),
+                        "fallback_soft_gate_reason": (
+                            (execution_result.get("fallback_soft_gate") or {}).get("reason")
+                            if isinstance(execution_result.get("fallback_soft_gate"), dict)
+                            else None
+                        ),
+                        "fallback_slippage_guard_reason": (
+                            (execution_result.get("fallback_slippage_guard") or {}).get("reason")
+                            if isinstance(execution_result.get("fallback_slippage_guard"), dict)
+                            else None
+                        ),
                         "env_forced_order_type": execution_result.get("env_forced_order_type"),
                         "entry_slippage_bps": entry_slippage_bps,
                         "entry_notional_usd": entry_notional_usd,
@@ -1334,6 +1374,8 @@ class LiveTradingEngine:
                 return {
                     'success': False,
                     'reason': execution_result.get('reason'),
+                    'reason_code': execution_result.get('reason_code'),
+                    'fallback_reason': execution_result.get('fallback_reason'),
                     'stage': 'order_execution'
                 }
             
@@ -1352,6 +1394,12 @@ class LiveTradingEngine:
             
             position_id = position_result['position_id']
             position = position_result.get('position')
+            postfill_rr_action = (position or {}).get("postfill_action") or signal.get("postfill_action")
+            self._record_execution_quality_sample(
+                signal=signal,
+                execution_result=execution_result if isinstance(execution_result, dict) else {},
+                postfill_early_exit=(str(postfill_rr_action or "").strip().lower() == "early_exit"),
+            )
 
             # -------------------------------------------------------------
             # Stage-4: Production Canary-0 (hard stop only) - fail-fast if
@@ -1400,7 +1448,7 @@ class LiveTradingEngine:
             # position immediately (reduce-only semantics enforced in exit path).
             # -------------------------------------------------------------
             try:
-                rr_action = (position or {}).get("postfill_action") or signal.get("postfill_action")
+                rr_action = postfill_rr_action
                 if rr_action == "early_exit":
                     rr_required = (position or {}).get("rr_required") or signal.get("rr_required")
                     rr_after = (position or {}).get("rr_after_fill") or signal.get("rr_after_fill")
@@ -1900,6 +1948,402 @@ class LiveTradingEngine:
             f"  REST Latency: {stats['avg_latency_rest']:.1f}ms\n"
             f"  Improvement: {stats['latency_improvement_pct']:.1f}%"
         )
+
+    @staticmethod
+    def _normalize_canary_symbols(raw_symbols: Any) -> List[str]:
+        if raw_symbols is None:
+            return []
+        if isinstance(raw_symbols, str):
+            parts = [part.strip() for part in raw_symbols.split(",")]
+            return [part.upper() for part in parts if part.strip()]
+        if isinstance(raw_symbols, (list, tuple, set)):
+            normalized: List[str] = []
+            for item in raw_symbols:
+                text = str(item or "").strip()
+                if text:
+                    normalized.append(text.upper())
+            return normalized
+        return []
+
+    @staticmethod
+    def _parse_non_negative_float(value: Any, default: Optional[float]) -> Optional[float]:
+        if value is None:
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not np.isfinite(parsed) or parsed < 0:
+            return default
+        return parsed
+
+    @staticmethod
+    def _parse_non_negative_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            return int(default)
+        return max(0, parsed)
+
+    @staticmethod
+    def _classify_threshold_severity(
+        value: Optional[float],
+        *,
+        warning: Optional[float],
+        critical: Optional[float],
+    ) -> Optional[str]:
+        if value is None:
+            return None
+        if critical is not None and value >= critical:
+            return "critical"
+        if warning is not None and value >= warning:
+            return "warning"
+        return None
+
+    def _get_canary_metrics_config(self) -> Dict[str, Any]:
+        cfg = self.config if isinstance(self.config, dict) else {}
+        monitoring_cfg = cfg.get("monitoring", {}) if isinstance(cfg.get("monitoring"), dict) else {}
+        canary_cfg = monitoring_cfg.get("canary_metrics", {}) if isinstance(monitoring_cfg.get("canary_metrics"), dict) else {}
+
+        enabled = bool(canary_cfg.get("enabled", True))
+        try:
+            interval_sec = int(float(canary_cfg.get("interval_sec", 300) or 300))
+        except Exception:
+            interval_sec = 300
+        interval_sec = max(30, interval_sec)
+
+        canary_symbols = self._normalize_canary_symbols(canary_cfg.get("canary_symbols"))
+        all_symbols = not canary_symbols or "*" in set(canary_symbols)
+        canary_set = None if all_symbols else set(canary_symbols)
+
+        default_thresholds = {
+            "postfill_exit_rate": {"warning": 0.20, "critical": 0.35},
+            "same_signal_repeat_rate": {"warning": 8.0, "critical": 15.0},
+            "band_snapshot_mismatch_rate": {"warning": 0.02, "critical": 0.05},
+            "slippage_p95_bps": {"warning": 4.0, "critical": 8.0},
+        }
+        alerts_cfg = canary_cfg.get("alerts", {}) if isinstance(canary_cfg.get("alerts"), dict) else {}
+        raw_thresholds = alerts_cfg.get("thresholds", {}) if isinstance(alerts_cfg.get("thresholds"), dict) else {}
+        parsed_thresholds: Dict[str, Dict[str, Optional[float]]] = {}
+        for metric_name, metric_defaults in default_thresholds.items():
+            metric_cfg = raw_thresholds.get(metric_name, {}) if isinstance(raw_thresholds.get(metric_name), dict) else {}
+            warning = self._parse_non_negative_float(
+                metric_cfg.get("warning", metric_cfg.get("warn", metric_defaults.get("warning"))),
+                metric_defaults.get("warning"),
+            )
+            critical = self._parse_non_negative_float(
+                metric_cfg.get("critical", metric_cfg.get("crit", metric_defaults.get("critical"))),
+                metric_defaults.get("critical"),
+            )
+            if warning is not None and critical is not None and critical < warning:
+                critical = warning
+            parsed_thresholds[metric_name] = {
+                "warning": warning,
+                "critical": critical,
+            }
+
+        min_entries = self._parse_non_negative_int(alerts_cfg.get("min_entries", 20), 20)
+        min_same_signal_total = self._parse_non_negative_int(
+            alerts_cfg.get("min_same_signal_total", min_entries),
+            min_entries,
+        )
+        min_band_checks = self._parse_non_negative_int(alerts_cfg.get("min_band_checks", 20), 20)
+        min_slippage_samples = self._parse_non_negative_int(
+            alerts_cfg.get("min_slippage_samples", min_entries),
+            min_entries,
+        )
+
+        return {
+            "enabled": enabled,
+            "interval_sec": interval_sec,
+            "canary_symbols": canary_symbols,
+            "all_symbols": all_symbols,
+            "canary_set": canary_set,
+            "alerts": {
+                "enabled": bool(alerts_cfg.get("enabled", True)),
+                "min_entries": min_entries,
+                "min_same_signal_total": min_same_signal_total,
+                "min_band_checks": min_band_checks,
+                "min_slippage_samples": min_slippage_samples,
+                "thresholds": parsed_thresholds,
+            },
+        }
+
+    def _evaluate_canary_metrics_alerts(self, snapshot: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+        alerts_cfg = cfg.get("alerts", {}) if isinstance(cfg.get("alerts"), dict) else {}
+        if not bool(alerts_cfg.get("enabled", True)):
+            return {
+                "enabled": False,
+                "status": "disabled",
+                "evaluated_metrics": 0,
+                "alerts": [],
+            }
+
+        thresholds = alerts_cfg.get("thresholds", {}) if isinstance(alerts_cfg.get("thresholds"), dict) else {}
+        min_entries = self._parse_non_negative_int(alerts_cfg.get("min_entries", 20), 20)
+        min_same_signal_total = self._parse_non_negative_int(
+            alerts_cfg.get("min_same_signal_total", min_entries),
+            min_entries,
+        )
+        min_band_checks = self._parse_non_negative_int(alerts_cfg.get("min_band_checks", 20), 20)
+        min_slippage_samples = self._parse_non_negative_int(
+            alerts_cfg.get("min_slippage_samples", min_entries),
+            min_entries,
+        )
+
+        entries_total = self._parse_non_negative_int(snapshot.get("entries_total", 0), 0)
+        same_signal_total = self._parse_non_negative_int(snapshot.get("same_signal_total_signals", 0), 0)
+        band_snapshot_checks = self._parse_non_negative_int(snapshot.get("band_snapshot_checks", 0), 0)
+        slippage_sample_count = self._parse_non_negative_int(snapshot.get("slippage_sample_count", 0), 0)
+
+        alerts: List[Dict[str, Any]] = []
+        evaluated_metrics = 0
+
+        def evaluate_metric(
+            metric_name: str,
+            value: Any,
+            *,
+            observed_count: int,
+            min_required: int,
+            observed_key: str,
+        ) -> None:
+            nonlocal evaluated_metrics
+            metric_thresholds = thresholds.get(metric_name, {}) if isinstance(thresholds.get(metric_name), dict) else {}
+            warning = self._parse_non_negative_float(metric_thresholds.get("warning"), None)
+            critical = self._parse_non_negative_float(metric_thresholds.get("critical"), None)
+            if warning is None and critical is None:
+                return
+            if observed_count < max(0, int(min_required)):
+                return
+
+            metric_value = self._parse_non_negative_float(value, None)
+            if metric_value is None:
+                return
+
+            evaluated_metrics += 1
+            severity = self._classify_threshold_severity(metric_value, warning=warning, critical=critical)
+            if severity is None:
+                return
+
+            alerts.append(
+                {
+                    "metric": metric_name,
+                    "severity": severity,
+                    "reason_code": f"monitoring.canary.{metric_name}.{severity}",
+                    "value": metric_value,
+                    "warning_threshold": warning,
+                    "critical_threshold": critical,
+                    observed_key: observed_count,
+                    "min_required": max(0, int(min_required)),
+                }
+            )
+
+        evaluate_metric(
+            "postfill_exit_rate",
+            snapshot.get("postfill_exit_rate"),
+            observed_count=entries_total,
+            min_required=min_entries,
+            observed_key="entries_total",
+        )
+        evaluate_metric(
+            "same_signal_repeat_rate",
+            snapshot.get("same_signal_repeat_rate"),
+            observed_count=same_signal_total,
+            min_required=min_same_signal_total,
+            observed_key="same_signal_total_signals",
+        )
+        evaluate_metric(
+            "band_snapshot_mismatch_rate",
+            snapshot.get("band_snapshot_mismatch_rate"),
+            observed_count=band_snapshot_checks,
+            min_required=min_band_checks,
+            observed_key="band_snapshot_checks",
+        )
+        evaluate_metric(
+            "slippage_p95_bps",
+            snapshot.get("slippage_p95_bps"),
+            observed_count=slippage_sample_count,
+            min_required=min_slippage_samples,
+            observed_key="slippage_sample_count",
+        )
+
+        if any(str(alert.get("severity")) == "critical" for alert in alerts):
+            status = "critical"
+        elif alerts:
+            status = "warning"
+        elif evaluated_metrics == 0:
+            status = "insufficient_data"
+        else:
+            status = "ok"
+
+        return {
+            "enabled": True,
+            "status": status,
+            "evaluated_metrics": evaluated_metrics,
+            "alerts": alerts,
+            "min_requirements": {
+                "entries_total": min_entries,
+                "same_signal_total_signals": min_same_signal_total,
+                "band_snapshot_checks": min_band_checks,
+                "slippage_sample_count": min_slippage_samples,
+            },
+        }
+
+    def _record_execution_quality_sample(
+        self,
+        *,
+        signal: Dict[str, Any],
+        execution_result: Dict[str, Any],
+        postfill_early_exit: bool,
+    ) -> None:
+        symbol = str((signal or {}).get("symbol") or "UNKNOWN").upper()
+        counts = self._execution_quality_counts
+        counts["entries_total"] = int(counts.get("entries_total", 0)) + 1
+        counts["entries_by_symbol"][symbol] += 1
+        if postfill_early_exit:
+            counts["postfill_early_exit_total"] = int(counts.get("postfill_early_exit_total", 0)) + 1
+            counts["postfill_early_exit_by_symbol"][symbol] += 1
+
+        slippage_bps = None
+        try:
+            raw = (execution_result or {}).get("slippage")
+            if raw is not None:
+                slippage_bps = float(raw) * 10000.0
+        except (TypeError, ValueError):
+            slippage_bps = None
+
+        if slippage_bps is not None and pd.notna(slippage_bps):
+            try:
+                value = float(slippage_bps)
+                if np.isfinite(value):
+                    self._entry_slippage_bps_samples.append(
+                        {
+                            "symbol": symbol,
+                            "bps": value,
+                            "ts_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        }
+                    )
+            except Exception:
+                pass
+
+    def _build_canary_metrics_snapshot(self) -> Optional[Dict[str, Any]]:
+        cfg = self._get_canary_metrics_config()
+        if not cfg.get("enabled", True):
+            return None
+
+        canary_set = cfg.get("canary_set")
+        counts = self._execution_quality_counts
+        entries_by_symbol = counts.get("entries_by_symbol", {})
+        postfill_by_symbol = counts.get("postfill_early_exit_by_symbol", {})
+
+        if canary_set is None:
+            entries_total = int(counts.get("entries_total", 0) or 0)
+            postfill_early_exit_total = int(counts.get("postfill_early_exit_total", 0) or 0)
+            slippage_values = [float(item.get("bps")) for item in self._entry_slippage_bps_samples if item.get("bps") is not None]
+            scope_kind = "all_symbols"
+        else:
+            entries_total = int(sum(int(entries_by_symbol.get(sym, 0) or 0) for sym in canary_set))
+            postfill_early_exit_total = int(sum(int(postfill_by_symbol.get(sym, 0) or 0) for sym in canary_set))
+            slippage_values = [
+                float(item.get("bps"))
+                for item in self._entry_slippage_bps_samples
+                if str(item.get("symbol") or "").upper() in canary_set and item.get("bps") is not None
+            ]
+            scope_kind = "canary_symbols"
+
+        postfill_exit_rate = (postfill_early_exit_total / entries_total) if entries_total > 0 else 0.0
+
+        slippage_p95_bps = None
+        if slippage_values:
+            try:
+                slippage_p95_bps = float(np.percentile(np.asarray(slippage_values, dtype=float), 95))
+            except Exception:
+                slippage_p95_bps = None
+
+        same_signal_rejections = None
+        same_signal_total = None
+        same_signal_repeat_rate = None
+        band_snapshot_mismatch_count = None
+        band_snapshot_checks = None
+        band_snapshot_mismatch_rate = None
+
+        try:
+            if self.strategy_coordinator and hasattr(self.strategy_coordinator, "get_duplicate_prevention_stats"):
+                dup_stats = self.strategy_coordinator.get_duplicate_prevention_stats() or {}
+                if isinstance(dup_stats, dict):
+                    same_signal_rejections = dup_stats.get("rejected_by_same_signal")
+                    same_signal_total = dup_stats.get("total_signals_processed")
+                    same_signal_repeat_rate = dup_stats.get("same_signal_repeat_rate")
+                    if same_signal_repeat_rate is None and same_signal_rejections is not None and same_signal_total:
+                        same_signal_repeat_rate = (float(same_signal_rejections) / float(same_signal_total)) * 100.0
+        except Exception:
+            same_signal_rejections = None
+            same_signal_total = None
+            same_signal_repeat_rate = None
+
+        try:
+            if self.strategy_coordinator and hasattr(self.strategy_coordinator, "get_processing_stats"):
+                proc = self.strategy_coordinator.get_processing_stats() or {}
+                stats = proc.get("stats") if isinstance(proc, dict) else None
+                if isinstance(stats, dict):
+                    band_snapshot_mismatch_count = stats.get("band_snapshot_mismatch_count")
+                    band_snapshot_checks = stats.get("band_snapshot_checks")
+                    if band_snapshot_mismatch_count is not None and band_snapshot_checks:
+                        band_snapshot_mismatch_rate = (
+                            float(band_snapshot_mismatch_count) / float(band_snapshot_checks)
+                        )
+        except Exception:
+            band_snapshot_mismatch_count = None
+            band_snapshot_checks = None
+            band_snapshot_mismatch_rate = None
+
+        snapshot = {
+            "event": "canary_metrics_snapshot",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "run_id": get_current_run_id(),
+            "scope": {
+                "kind": scope_kind,
+                "canary_symbols": cfg.get("canary_symbols"),
+            },
+            "postfill_exit_rate": postfill_exit_rate,
+            "postfill_early_exit_count": postfill_early_exit_total,
+            "entries_total": entries_total,
+            "same_signal_repeat_rate": same_signal_repeat_rate,
+            "same_signal_rejections": same_signal_rejections,
+            "same_signal_total_signals": same_signal_total,
+            "band_snapshot_mismatch_count": band_snapshot_mismatch_count,
+            "band_snapshot_checks": band_snapshot_checks,
+            "band_snapshot_mismatch_rate": band_snapshot_mismatch_rate,
+            "slippage_p95_bps": slippage_p95_bps,
+            "slippage_sample_count": len(slippage_values),
+        }
+
+        alert_eval = self._evaluate_canary_metrics_alerts(snapshot, cfg)
+        snapshot["alerts"] = alert_eval
+        snapshot["alert_status"] = alert_eval.get("status")
+        snapshot["alert_count"] = len(alert_eval.get("alerts", []))
+        return snapshot
+
+    def _emit_canary_metrics_snapshot(self) -> None:
+        payload = self._build_canary_metrics_snapshot()
+        if not isinstance(payload, dict):
+            return
+        logger.info("canary_metrics_snapshot %s", payload)
+        alert_meta = payload.get("alerts", {}) if isinstance(payload.get("alerts"), dict) else {}
+        alert_status = str(alert_meta.get("status") or "").lower()
+        if alert_status in {"warning", "critical"}:
+            alert_payload = {
+                "event": "canary_metrics_alert",
+                "timestamp": payload.get("timestamp"),
+                "run_id": payload.get("run_id"),
+                "scope": payload.get("scope"),
+                "status": alert_status,
+                "alerts": alert_meta.get("alerts", []),
+            }
+            if alert_status == "critical":
+                logger.error("canary_metrics_alert %s", alert_payload)
+            else:
+                logger.warning("canary_metrics_alert %s", alert_payload)
     
     async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """
@@ -2256,26 +2700,49 @@ class LiveTradingEngine:
     async def _performance_reporting_loop(self):
         """Background task for performance reporting."""
         logger.info("Performance reporting loop started")
-        
-        interval = self.config.get('monitoring', {}).get('performance_report_interval', 3600)
-        
+
+        monitoring_cfg = self.config.get('monitoring', {}) if isinstance(self.config, dict) else {}
+        try:
+            report_interval = int(float(monitoring_cfg.get('performance_report_interval', 3600) or 3600))
+        except Exception:
+            report_interval = 3600
+        report_interval = max(60, report_interval)
+
+        canary_cfg = self._get_canary_metrics_config()
+        canary_enabled = bool(canary_cfg.get("enabled", True))
+        canary_interval = int(canary_cfg.get("interval_sec", 300) or 300)
+        canary_interval = max(30, canary_interval)
+
+        next_report = time.monotonic()
+        next_canary = time.monotonic()
+
         try:
             while self.state == EngineState.RUNNING:
-                try:
-                    report = self.execution_analytics.generate_execution_report('1h')
-                    
-                    if report['success']:
-                        logger.info("📊 Performance report generated")
-                        logger.info(f"   Total trades: {report.get('total_trades', 0)}")
-                        logger.info(f"   Win rate: {report.get('win_rate', 0):.2%}")
-                        logger.info(f"   Average P&L: {report.get('avg_pnl', 0):.2%}")
-                    
-                    await asyncio.sleep(interval)
-                    
-                except Exception as e:
-                    logger.error(f"Error in performance reporting: {e}")
-                    await asyncio.sleep(interval)
-                    
+                now = time.monotonic()
+
+                if now >= next_report:
+                    try:
+                        report = self.execution_analytics.generate_execution_report('1h')
+                        if report['success']:
+                            logger.info("📊 Performance report generated")
+                            logger.info(f"   Total trades: {report.get('total_trades', 0)}")
+                            logger.info(f"   Win rate: {report.get('win_rate', 0):.2%}")
+                            logger.info(f"   Average P&L: {report.get('avg_pnl', 0):.2%}")
+                    except Exception as e:
+                        logger.error(f"Error in performance reporting: {e}")
+                    next_report = now + float(report_interval)
+
+                if canary_enabled and now >= next_canary:
+                    try:
+                        self._emit_canary_metrics_snapshot()
+                    except Exception as e:
+                        logger.error(f"Error emitting canary metrics snapshot: {e}")
+                    next_canary = now + float(canary_interval)
+
+                next_due = min(next_report, next_canary) if canary_enabled else next_report
+                sleep_for = max(1.0, min(30.0, float(next_due) - float(time.monotonic())))
+                await asyncio.sleep(sleep_for)
+
         except asyncio.CancelledError:
             logger.info("Performance reporting loop cancelled")
     
@@ -2494,5 +2961,9 @@ class LiveTradingEngine:
             
         if self.position_manager and hasattr(self.position_manager, 'get_position_summary'):
             status['position_summary'] = self.position_manager.get_position_summary()
+
+        canary_metrics = self._build_canary_metrics_snapshot()
+        if isinstance(canary_metrics, dict):
+            status['canary_metrics'] = canary_metrics
         
         return status

@@ -1,5 +1,6 @@
 import pytest
 import logging
+import json
 from unittest.mock import MagicMock, patch
 from src.quality.quality_calculator import compute_quality
 from src.core.strategy_coordinator import StrategyCoordinator
@@ -52,7 +53,17 @@ class TestIssue436:
             "strategy_name": "test_strat",
             "side": "buy",
             "ml_confidence": 0.85,
-            "predicted_regime": "bullish"
+            "predicted_regime": "bullish",
+            "band_snapshot": {
+                "source": "controller_post_overlay",
+                "lower": 99.1,
+                "upper": 101.2,
+                "vwap": 100.0,
+                "vwap_std": 0.5,
+                "band_multiplier": 1.8,
+                "controller_reason": "updated+adaptive",
+                "ts_utc": "2026-02-17T21:10:00+00:00",
+            },
         }
         
         quality_result = {
@@ -72,6 +83,9 @@ class TestIssue436:
         log_call = [c for c in mock_logger.info.call_args_list if "SIGNAL_BREAKDOWN" in c[0][0]]
         assert log_call
         assert "quality_score" in log_call[0][0][0]
+        payload = json.loads(log_call[0][0][0].split("SIGNAL_BREAKDOWN ", 1)[1])
+        assert payload["band_snapshot"]["source"] == "controller_post_overlay"
+        assert payload["band_snapshot"]["lower"] == pytest.approx(99.1, abs=1e-9)
 
     def test_position_manager_metadata_extraction(self):
         """Test that PositionManager extracts quality score correctly."""

@@ -108,6 +108,29 @@ async def test_episode_c_rejection_confirmation_short_cases(last_row, expected_s
 
 
 @pytest.mark.asyncio
+async def test_generated_signal_contains_band_snapshot():
+    strategy = _make_strategy()
+    df_vwap = _make_vwap_df(3, vwap=100.0, upper=101.0, lower=99.0, std=0.1)
+    df_sig = _make_sig_df(
+        3,
+        [{"open": 103.0, "close": 102.0, "high": 105.0, "low": 101.0, "adx": 20.0, "atr": 1.0}],
+        includes_forming=False,
+    )
+
+    signal = await strategy.generate_signal(
+        "BTC/USDT:USDT",
+        market_data={"df_vwap": df_vwap, "df_sig": df_sig},
+    )
+
+    assert signal is not None
+    snapshot = signal.get("band_snapshot")
+    assert isinstance(snapshot, dict)
+    assert snapshot.get("source") in {"controller_post_overlay", "pipeline_fallback"}
+    assert snapshot.get("lower") == pytest.approx(float(signal["vwap_lower"]), abs=1e-9)
+    assert snapshot.get("upper") == pytest.approx(float(signal["vwap_upper"]), abs=1e-9)
+
+
+@pytest.mark.asyncio
 async def test_episode_c_impulse_telemetry_emitted():
     strategy = _make_strategy()
     df_vwap = _make_vwap_df(3, vwap=100.0, upper=101.0, lower=99.0, std=0.1)

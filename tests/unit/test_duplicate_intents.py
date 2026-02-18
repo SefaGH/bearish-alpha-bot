@@ -191,3 +191,53 @@ def test_rsi_session_resets_when_rsi_recovers():
     # RSI recovers; session should be cleared.
     coordinator.validate_duplicate({"symbol": symbol, "entry": 10.0, "side": "long", "rsi": 31.0}, "strat")
     assert symbol not in coordinator.rsi_session_state
+
+
+def test_same_signal_cooldown_rejects_repeated_price_bucket_after_base_cooldown():
+    cfg_override = {
+        "cooldown_seconds": 20,
+        "same_signal_cooldown_seconds": 600,
+        "same_signal_tick_size": 0.1,
+        "price_delta_bypass_enabled": True,
+    }
+    coordinator = _build_coordinator(cfg_override)
+    symbol = "BTC/USDT"
+    strategy = "strat"
+
+    first = {"symbol": symbol, "entry": 67560.6, "side": "long", "timeframe": "5m", "intent": INTENT_ENTRY}
+    ok, _ = coordinator.validate_duplicate(first, strategy)
+    assert ok is True
+
+    # Move base cooldown window out of the way, keep same-signal window active.
+    coordinator.last_signal_time[f"{symbol}:{strategy}"] = 0.0
+
+    second = {"symbol": symbol, "entry": 67560.62, "side": "buy", "timeframe": "5m", "intent": INTENT_ENTRY}
+    ok, reason = coordinator.validate_duplicate(second, strategy)
+    assert ok is False
+    assert "same-signal cooldown" in reason.lower()
+
+
+def test_same_signal_cooldown_allows_after_window_expiry():
+    cfg_override = {
+        "cooldown_seconds": 20,
+        "same_signal_cooldown_seconds": 60,
+        "same_signal_tick_size": 0.1,
+        "price_delta_bypass_enabled": True,
+    }
+    coordinator = _build_coordinator(cfg_override)
+    symbol = "ETH/USDT"
+    strategy = "strat"
+
+    first = {"symbol": symbol, "entry": 2000.0, "side": "short", "timeframe": "5m", "intent": INTENT_ENTRY}
+    ok, _ = coordinator.validate_duplicate(first, strategy)
+    assert ok is True
+
+    # Simulate both base and same-signal cooldowns expired.
+    coordinator.last_signal_time[f"{symbol}:{strategy}"] = 0.0
+    key = f"{strategy}:{symbol}:5m:short:{2000.0:.10f}"
+    coordinator._same_signal_last_time[key] = 0.0
+
+    second = {"symbol": symbol, "entry": 2000.0, "side": "sell", "timeframe": "5m", "intent": INTENT_ENTRY}
+    ok, reason = coordinator.validate_duplicate(second, strategy)
+    assert ok is True
+    assert "ok" in reason.lower()

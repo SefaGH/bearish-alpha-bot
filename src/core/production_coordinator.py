@@ -143,6 +143,7 @@ ML_HEALTH_CHECK_SYMBOL = "HEALTH_CHECK_BTC/USDT"  # Symbol for ML health checks
 
 class ProductionCoordinator:
     """Coordinate all Phase 3 components for production deployment."""
+    ML_GOVERNANCE_ALLOWED_MODES = {"apply", "shadow", "disabled"}
     
     # --- DEĞİŞİKLİK 1: __init__ metodunu `config` alacak şekilde güncelle ---
     def __init__(self, config: Optional[Dict] = None):
@@ -196,9 +197,26 @@ class ProductionCoordinator:
             self.config = LiveTradingConfiguration.load()
             logger.warning("ProductionCoordinator initialized by loading its own configuration. (Legacy mode)")
 
-        rl_cfg_dbg = (self.config.get('ml', {}) or {}).get('reinforcement_learning', {})
+        ml_cfg_dbg = self.config.get('ml', {}) if isinstance(self.config, dict) else {}
+        if not isinstance(ml_cfg_dbg, dict):
+            ml_cfg_dbg = {}
+        self._ml_governance_modes = self._resolve_ml_governance_modes(ml_cfg_dbg)
+        self._ml_governance_runtime_state: Dict[str, Dict[str, Any]] = {}
+        self._ppo_telemetry_cursor: Dict[str, Any] = {
+            "samples": 0,
+            "flat_votes": 0,
+            "long_votes": 0,
+            "score_sum": 0.0,
+        }
+        rl_cfg_dbg = (ml_cfg_dbg.get('reinforcement_learning', {}) or {})
         logger.info(
-            "🧪 [PPO-CONFIG] enabled=%s | symbols=%s",
+            "🧪 [ML-GOVERNANCE] gemma_mode=%s | ppo_mode=%s",
+            self._ml_governance_modes.get('gemma_mode'),
+            self._ml_governance_modes.get('ppo_mode'),
+        )
+        logger.info(
+            "🧪 [PPO-CONFIG] mode=%s | enabled=%s | symbols=%s",
+            self._ml_governance_modes.get('ppo_mode'),
             rl_cfg_dbg.get('ppo_enabled'),
             rl_cfg_dbg.get('ppo_symbols'),
         )
@@ -217,6 +235,453 @@ class ProductionCoordinator:
             return float(value) if value is not None else None
         except Exception:
             return None
+
+    @classmethod
+    def _normalize_ml_governance_mode(cls, value: Any, *, default: str = "apply") -> str:
+        default_mode = str(default or "apply").strip().lower()
+        if default_mode not in cls.ML_GOVERNANCE_ALLOWED_MODES:
+            default_mode = "apply"
+        mode = str(value or default_mode).strip().lower()
+        if mode not in cls.ML_GOVERNANCE_ALLOWED_MODES:
+            logger.warning(
+                "⚠️ [ML-GOVERNANCE] Invalid mode '%s'; falling back to '%s'. Allowed=%s",
+                value,
+                default_mode,
+                sorted(cls.ML_GOVERNANCE_ALLOWED_MODES),
+            )
+            return default_mode
+        return mode
+
+    @classmethod
+    def _resolve_ml_governance_modes(cls, ml_cfg: Dict[str, Any]) -> Dict[str, str]:
+        governance_cfg = ml_cfg.get("governance", {}) if isinstance(ml_cfg, dict) else {}
+        if not isinstance(governance_cfg, dict):
+            governance_cfg = {}
+
+        gemma_cfg = ml_cfg.get("gemma", {}) if isinstance(ml_cfg, dict) else {}
+        if not isinstance(gemma_cfg, dict):
+            gemma_cfg = {}
+
+        raw_gemma_mode = governance_cfg.get("gemma_mode")
+        # Backward-compat: if governance key is absent, honor legacy shadow toggle as default mode.
+        if raw_gemma_mode is None and bool(gemma_cfg.get("shadow_mode", False)):
+            raw_gemma_mode = "shadow"
+
+        raw_ppo_mode = governance_cfg.get("ppo_mode")
+
+        return {
+            "gemma_mode": cls._normalize_ml_governance_mode(raw_gemma_mode, default="apply"),
+            "ppo_mode": cls._normalize_ml_governance_mode(raw_ppo_mode, default="apply"),
+        }
+
+    @staticmethod
+    def _clamp01(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = float(default)
+        if not math.isfinite(parsed):
+            parsed = float(default)
+        return max(0.0, min(1.0, parsed))
+
+    @staticmethod
+    def _coerce_non_negative_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            parsed = int(default)
+        return max(0, parsed)
+
+    @staticmethod
+    def _coerce_non_negative_float(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = float(default)
+        if not math.isfinite(parsed):
+            parsed = float(default)
+        return max(0.0, parsed)
+
+    def _get_ml_governance_automation_config(self) -> Dict[str, Any]:
+        cfg = self.config if isinstance(self.config, dict) else {}
+        monitoring_cfg = cfg.get("monitoring", {}) if isinstance(cfg.get("monitoring"), dict) else {}
+        ml_cfg = cfg.get("ml", {}) if isinstance(cfg.get("ml"), dict) else {}
+        governance_cfg = ml_cfg.get("governance", {}) if isinstance(ml_cfg.get("governance"), dict) else {}
+        automation_cfg = governance_cfg.get("automation", {}) if isinstance(governance_cfg.get("automation"), dict) else {}
+        ppo_cfg = automation_cfg.get("ppo", {}) if isinstance(automation_cfg.get("ppo"), dict) else {}
+
+        rl_interval = self._coerce_non_negative_int(
+            monitoring_cfg.get("rl_telemetry_interval_seconds", 300),
+            300,
+        )
+        auto_interval = self._coerce_non_negative_int(
+            automation_cfg.get("interval_sec", rl_interval or 300),
+            rl_interval or 300,
+        )
+
+        degrade_to_mode = self._normalize_ml_governance_mode(
+            ppo_cfg.get("degrade_to_mode", "shadow"),
+            default="shadow",
+        )
+        if degrade_to_mode == "apply":
+            degrade_to_mode = "shadow"
+
+        bad_flat_vote_rate = self._clamp01(
+            ppo_cfg.get("bad_flat_vote_rate", ppo_cfg.get("max_flat_vote_rate", 0.98)),
+            0.98,
+        )
+        bad_avg_score_max_raw = ppo_cfg.get("bad_avg_score_max", ppo_cfg.get("max_avg_score_for_bad_window", 0.10))
+        bad_avg_score_max = self._clamp01(bad_avg_score_max_raw, 0.10)
+
+        good_flat_vote_rate = self._clamp01(
+            ppo_cfg.get("good_flat_vote_rate", ppo_cfg.get("recovery_flat_vote_rate", 0.90)),
+            0.90,
+        )
+        good_avg_score_min = self._clamp01(
+            ppo_cfg.get("good_avg_score_min", ppo_cfg.get("recovery_avg_score_min", 0.35)),
+            0.35,
+        )
+
+        return {
+            "enabled": bool(automation_cfg.get("enabled", False)),
+            "interval_sec": max(60, auto_interval),
+            "ppo": {
+                "enabled": bool(ppo_cfg.get("enabled", True)),
+                "min_window_samples": max(
+                    1,
+                    self._coerce_non_negative_int(ppo_cfg.get("min_window_samples", 30), 30),
+                ),
+                "degrade_after_windows": max(
+                    1,
+                    self._coerce_non_negative_int(ppo_cfg.get("degrade_after_windows", 3), 3),
+                ),
+                "recover_after_windows": max(
+                    1,
+                    self._coerce_non_negative_int(ppo_cfg.get("recover_after_windows", 5), 5),
+                ),
+                "cooldown_sec": max(
+                    0,
+                    self._coerce_non_negative_int(ppo_cfg.get("cooldown_sec", 900), 900),
+                ),
+                "auto_recover": bool(ppo_cfg.get("auto_recover", False)),
+                "degrade_to_mode": degrade_to_mode,
+                "bad_flat_vote_rate": bad_flat_vote_rate,
+                "bad_avg_score_max": bad_avg_score_max,
+                "good_flat_vote_rate": good_flat_vote_rate,
+                "good_avg_score_min": good_avg_score_min,
+            },
+        }
+
+    def _compute_ppo_telemetry_window(self, stats: Dict[str, Any]) -> Dict[str, Any]:
+        cursor = self._ppo_telemetry_cursor if isinstance(self._ppo_telemetry_cursor, dict) else {}
+        prev_samples = int(cursor.get("samples", 0) or 0)
+        prev_flat = int(cursor.get("flat_votes", 0) or 0)
+        prev_long = int(cursor.get("long_votes", 0) or 0)
+        prev_score_sum = float(cursor.get("score_sum", 0.0) or 0.0)
+
+        total_samples = int(stats.get("ppo_samples", 0) or 0)
+        total_flat = int(stats.get("ppo_flat_votes", 0) or 0)
+        total_long = int(stats.get("ppo_long_votes", 0) or 0)
+        total_avg = self._coerce_non_negative_float(stats.get("ppo_avg_score", 0.0), 0.0)
+        total_score_sum = float(total_avg) * float(total_samples)
+
+        # Telemetry counters may reset on restart/reconnect; treat that as fresh baseline.
+        if (
+            total_samples < prev_samples
+            or total_flat < prev_flat
+            or total_long < prev_long
+            or total_score_sum < prev_score_sum
+        ):
+            prev_samples = 0
+            prev_flat = 0
+            prev_long = 0
+            prev_score_sum = 0.0
+
+        window_samples = max(0, total_samples - prev_samples)
+        window_flat = max(0, total_flat - prev_flat)
+        window_long = max(0, total_long - prev_long)
+        window_score_sum = max(0.0, total_score_sum - prev_score_sum)
+
+        self._ppo_telemetry_cursor = {
+            "samples": total_samples,
+            "flat_votes": total_flat,
+            "long_votes": total_long,
+            "score_sum": total_score_sum,
+        }
+
+        window_flat_vote_rate = None
+        window_avg_score = None
+        if window_samples > 0:
+            window_flat_vote_rate = float(window_flat) / float(window_samples)
+            window_avg_score = float(window_score_sum) / float(window_samples)
+
+        return {
+            "total_samples": total_samples,
+            "total_flat_votes": total_flat,
+            "total_long_votes": total_long,
+            "total_avg_score": total_avg,
+            "window_samples": window_samples,
+            "window_flat_votes": window_flat,
+            "window_long_votes": window_long,
+            "window_flat_vote_rate": window_flat_vote_rate,
+            "window_avg_score": window_avg_score,
+        }
+
+    def _apply_runtime_ppo_governance_mode(
+        self,
+        *,
+        target_mode: str,
+        reason_code: str,
+        evidence: Optional[Dict[str, Any]] = None,
+        source: str = "auto",
+    ) -> Dict[str, Any]:
+        normalized_target = self._normalize_ml_governance_mode(target_mode, default="shadow")
+        current_mode = self._normalize_ml_governance_mode(
+            (self._ml_governance_modes or {}).get("ppo_mode", "apply"),
+            default="apply",
+        )
+
+        transition_payload: Dict[str, Any] = {
+            "event": "ml_governance_transition",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "run_id": get_current_run_id(),
+            "component": "ppo",
+            "from_mode": current_mode,
+            "to_mode": normalized_target,
+            "reason_code": str(reason_code or "ml.governance.ppo.auto.transition"),
+            "source": source,
+            "changed": False,
+            "evidence": evidence if isinstance(evidence, dict) else {},
+        }
+
+        if current_mode == normalized_target:
+            return transition_payload
+
+        cfg = self.config if isinstance(self.config, dict) else {}
+        ml_cfg = cfg.get("ml", {}) if isinstance(cfg.get("ml"), dict) else {}
+        if not isinstance(ml_cfg, dict):
+            ml_cfg = {}
+            cfg["ml"] = ml_cfg
+
+        governance_cfg = ml_cfg.get("governance", {})
+        if not isinstance(governance_cfg, dict):
+            governance_cfg = {}
+            ml_cfg["governance"] = governance_cfg
+        governance_cfg["ppo_mode"] = normalized_target
+
+        rl_cfg = ml_cfg.get("reinforcement_learning", {})
+        if not isinstance(rl_cfg, dict):
+            rl_cfg = {}
+            ml_cfg["reinforcement_learning"] = rl_cfg
+        rl_cfg["ppo_mode"] = normalized_target
+        if normalized_target == "disabled":
+            rl_cfg["ppo_enabled"] = False
+
+        self._ml_governance_modes = self._resolve_ml_governance_modes(ml_cfg)
+        transition_payload["changed"] = True
+        transition_payload["effective_mode"] = self._ml_governance_modes.get("ppo_mode")
+
+        refresh_error = None
+        if self.strategy_coordinator:
+            refresh_governance = getattr(self.strategy_coordinator, "refresh_ml_governance_modes", None)
+            if callable(refresh_governance):
+                try:
+                    refresh_governance(ml_cfg)
+                except Exception as exc:
+                    refresh_error = str(exc)
+
+        if refresh_error:
+            transition_payload["refresh_error"] = refresh_error
+            logger.error("ml_governance_transition %s", transition_payload)
+        elif normalized_target in {"shadow", "disabled"}:
+            logger.warning("ml_governance_transition %s", transition_payload)
+        else:
+            logger.info("ml_governance_transition %s", transition_payload)
+
+        return transition_payload
+
+    def _run_ml_governance_automation_cycle(
+        self,
+        stats: Dict[str, Any],
+        *,
+        now_monotonic: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        automation_cfg = self._get_ml_governance_automation_config()
+        now_mono = float(now_monotonic if now_monotonic is not None else time.monotonic())
+        ppo_cfg = automation_cfg.get("ppo", {}) if isinstance(automation_cfg.get("ppo"), dict) else {}
+        current_mode = self._normalize_ml_governance_mode(
+            (self._ml_governance_modes or {}).get("ppo_mode", "apply"),
+            default="apply",
+        )
+
+        snapshot: Dict[str, Any] = {
+            "event": "ml_governance_snapshot",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "run_id": get_current_run_id(),
+            "component": "ppo",
+            "enabled": bool(automation_cfg.get("enabled", False) and ppo_cfg.get("enabled", True)),
+            "mode": current_mode,
+            "status": "disabled",
+            "window": {},
+            "state": {},
+            "thresholds": {
+                "min_window_samples": ppo_cfg.get("min_window_samples"),
+                "bad_flat_vote_rate": ppo_cfg.get("bad_flat_vote_rate"),
+                "bad_avg_score_max": ppo_cfg.get("bad_avg_score_max"),
+                "good_flat_vote_rate": ppo_cfg.get("good_flat_vote_rate"),
+                "good_avg_score_min": ppo_cfg.get("good_avg_score_min"),
+                "degrade_after_windows": ppo_cfg.get("degrade_after_windows"),
+                "recover_after_windows": ppo_cfg.get("recover_after_windows"),
+                "cooldown_sec": ppo_cfg.get("cooldown_sec"),
+                "degrade_to_mode": ppo_cfg.get("degrade_to_mode"),
+                "auto_recover": ppo_cfg.get("auto_recover"),
+            },
+        }
+
+        if not snapshot["enabled"]:
+            return snapshot
+
+        window = self._compute_ppo_telemetry_window(stats if isinstance(stats, dict) else {})
+        snapshot["window"] = window
+
+        state = self._ml_governance_runtime_state.setdefault(
+            "ppo",
+            {
+                "bad_windows": 0,
+                "good_windows": 0,
+                "last_transition_mono": None,
+                "last_transition_reason_code": None,
+                "last_transition_source": None,
+            },
+        )
+
+        window_samples = int(window.get("window_samples", 0) or 0)
+        min_window_samples = int(ppo_cfg.get("min_window_samples", 30) or 30)
+
+        if window_samples <= 0:
+            snapshot["status"] = "no_new_samples"
+            snapshot["state"] = dict(state)
+            return snapshot
+
+        if window_samples < min_window_samples:
+            snapshot["status"] = "insufficient_window_samples"
+            snapshot["state"] = dict(state)
+            return snapshot
+
+        flat_vote_rate = window.get("window_flat_vote_rate")
+        avg_score = window.get("window_avg_score")
+
+        bad_reasons: List[str] = []
+        if flat_vote_rate is not None and float(flat_vote_rate) >= float(ppo_cfg.get("bad_flat_vote_rate", 0.98)):
+            bad_reasons.append("flat_vote_rate_high")
+        if avg_score is not None and float(avg_score) <= float(ppo_cfg.get("bad_avg_score_max", 0.10)):
+            bad_reasons.append("avg_score_low")
+        is_bad_window = bool(bad_reasons)
+
+        is_good_window = False
+        if flat_vote_rate is not None and avg_score is not None:
+            is_good_window = (
+                float(flat_vote_rate) <= float(ppo_cfg.get("good_flat_vote_rate", 0.90))
+                and float(avg_score) >= float(ppo_cfg.get("good_avg_score_min", 0.35))
+            )
+
+        if is_bad_window:
+            state["bad_windows"] = int(state.get("bad_windows", 0) or 0) + 1
+            state["good_windows"] = 0
+        elif is_good_window:
+            state["good_windows"] = int(state.get("good_windows", 0) or 0) + 1
+            state["bad_windows"] = 0
+        else:
+            state["bad_windows"] = 0
+            state["good_windows"] = 0
+
+        cooldown_sec = self._coerce_non_negative_int(ppo_cfg.get("cooldown_sec", 900), 900)
+        last_transition_mono = state.get("last_transition_mono")
+        cooldown_ok = True
+        if isinstance(last_transition_mono, (int, float)):
+            cooldown_ok = (now_mono - float(last_transition_mono)) >= float(cooldown_sec)
+
+        transition = None
+        degrade_to_mode = self._normalize_ml_governance_mode(
+            ppo_cfg.get("degrade_to_mode", "shadow"),
+            default="shadow",
+        )
+        if degrade_to_mode == "apply":
+            degrade_to_mode = "shadow"
+
+        if current_mode == "apply":
+            degrade_after_windows = max(1, self._coerce_non_negative_int(ppo_cfg.get("degrade_after_windows", 3), 3))
+            if is_bad_window and int(state.get("bad_windows", 0) or 0) >= max(1, degrade_after_windows):
+                if cooldown_ok:
+                    primary_reason = bad_reasons[0] if bad_reasons else "health_window"
+                    transition_reason = f"ml.governance.ppo.auto.degrade.{primary_reason}"
+                    transition = self._apply_runtime_ppo_governance_mode(
+                        target_mode=degrade_to_mode,
+                        reason_code=transition_reason,
+                        evidence={
+                            "bad_reasons": bad_reasons,
+                            "window_samples": window_samples,
+                            "window_flat_vote_rate": flat_vote_rate,
+                            "window_avg_score": avg_score,
+                            "bad_windows": int(state.get("bad_windows", 0) or 0),
+                        },
+                        source="auto",
+                    )
+                    if transition.get("changed"):
+                        state["last_transition_mono"] = now_mono
+                        state["last_transition_reason_code"] = transition_reason
+                        state["last_transition_source"] = "auto"
+                        state["bad_windows"] = 0
+                        state["good_windows"] = 0
+                        current_mode = transition.get("effective_mode", degrade_to_mode)
+                else:
+                    snapshot["status"] = "cooldown_active"
+
+        elif bool(ppo_cfg.get("auto_recover", False)):
+            recover_after_windows = max(1, self._coerce_non_negative_int(ppo_cfg.get("recover_after_windows", 5), 5))
+            if (
+                is_good_window
+                and int(state.get("good_windows", 0) or 0) >= max(1, recover_after_windows)
+                and str(state.get("last_transition_source") or "").lower() == "auto"
+            ):
+                if cooldown_ok:
+                    transition_reason = "ml.governance.ppo.auto.recover.health_window"
+                    transition = self._apply_runtime_ppo_governance_mode(
+                        target_mode="apply",
+                        reason_code=transition_reason,
+                        evidence={
+                            "window_samples": window_samples,
+                            "window_flat_vote_rate": flat_vote_rate,
+                            "window_avg_score": avg_score,
+                            "good_windows": int(state.get("good_windows", 0) or 0),
+                        },
+                        source="auto",
+                    )
+                    if transition.get("changed"):
+                        state["last_transition_mono"] = now_mono
+                        state["last_transition_reason_code"] = transition_reason
+                        state["last_transition_source"] = "auto"
+                        state["bad_windows"] = 0
+                        state["good_windows"] = 0
+                        current_mode = transition.get("effective_mode", "apply")
+                else:
+                    snapshot["status"] = "cooldown_active"
+
+        snapshot["mode"] = current_mode
+        snapshot["state"] = dict(state)
+        snapshot["window"]["is_bad_window"] = is_bad_window
+        snapshot["window"]["is_good_window"] = is_good_window
+        snapshot["window"]["bad_reasons"] = bad_reasons
+
+        if transition and transition.get("changed"):
+            snapshot["status"] = "transition_applied"
+            snapshot["transition"] = transition
+        elif snapshot.get("status") == "disabled":
+            snapshot["status"] = "tracking"
+        elif snapshot.get("status") not in {"cooldown_active"}:
+            snapshot["status"] = "tracking"
+
+        return snapshot
 
     @staticmethod
     def _attach_router_snapshots_to_signal(
@@ -3303,6 +3768,17 @@ class ProductionCoordinator:
 
         # Ana konfigürasyondan 'ml' bloğunu al
         ml_config = self.config.get('ml', {})
+        if not isinstance(ml_config, dict):
+            ml_config = {}
+            self.config['ml'] = ml_config
+        governance_modes = self._resolve_ml_governance_modes(ml_config)
+        ml_config['governance'] = dict(governance_modes)
+        self._ml_governance_modes = dict(governance_modes)
+        logger.info(
+            "🧠 [ML-GOVERNANCE] effective modes | gemma=%s | ppo=%s",
+            governance_modes.get("gemma_mode"),
+            governance_modes.get("ppo_mode"),
+        )
         
         # Initialize manifest manager first
         models_config = dict(self.config.get('models', {}))
@@ -3377,13 +3853,27 @@ class ProductionCoordinator:
         price_pred_config = dict(ml_config.get('price_prediction', {}) or {})
 
         # Gemma adapter controls:
-        # - Operational enable/disable: `ml.gemma.enabled` (single source of truth)
-        # - Shadow mode precedence: `ml.price_prediction.shadow_mode` (explicit) > `ml.gemma.shadow_mode` (fallback)
+        # - Runtime mode is governed by `ml.governance.gemma_mode` (apply|shadow|disabled)
+        # - Legacy fallback shadow precedence remains:
+        #   `ml.price_prediction.shadow_mode` (explicit) > `ml.gemma.shadow_mode` (fallback)
         gemma_cfg = ml_config.get('gemma', {})
+        gemma_mode = governance_modes.get("gemma_mode", "apply")
         if isinstance(gemma_cfg, dict):
-            price_pred_config['gemma_enabled'] = bool(gemma_cfg.get('enabled', True))
-            if 'shadow_mode' not in price_pred_config and 'shadow_mode' in gemma_cfg:
+            gemma_requested = bool(gemma_cfg.get('enabled', True))
+            price_pred_config['gemma_enabled'] = bool(gemma_requested and gemma_mode != "disabled")
+            if gemma_mode == "shadow":
+                price_pred_config['shadow_mode'] = True
+            elif gemma_mode == "disabled":
+                price_pred_config['shadow_mode'] = False
+            elif 'shadow_mode' not in price_pred_config and 'shadow_mode' in gemma_cfg:
                 price_pred_config['shadow_mode'] = bool(gemma_cfg.get('shadow_mode', False))
+            logger.info(
+                "🧠 [ML-GOVERNANCE] GEMMA mode=%s | requested_enabled=%s | runtime_enabled=%s | shadow_mode=%s",
+                gemma_mode,
+                gemma_requested,
+                bool(price_pred_config.get('gemma_enabled', False)),
+                bool(price_pred_config.get('shadow_mode', False)),
+            )
         if price_pred_config.get('enabled', True):
             try:
                 self.price_engine = AdvancedPricePredictionEngine(
@@ -3421,7 +3911,17 @@ class ProductionCoordinator:
 
         # 4. Pekiştirmeli Öğrenme Ajanı (Reinforcement Learning Agent)
         # ✔️ DÜZELTME: Bu bileşene artık sadece 'reinforcement_learning' alt bloğu verilir + dynamic state_size
-        rl_config = ml_config.get('reinforcement_learning', {})
+        rl_config = dict(ml_config.get('reinforcement_learning', {}) or {})
+        ppo_mode = governance_modes.get("ppo_mode", "apply")
+        rl_config["ppo_mode"] = ppo_mode
+        if ppo_mode == "disabled":
+            rl_config["ppo_enabled"] = False
+        ml_config["reinforcement_learning"] = rl_config
+        logger.info(
+            "🧠 [ML-GOVERNANCE] PPO mode=%s | runtime_enabled=%s",
+            ppo_mode,
+            bool(rl_config.get("ppo_enabled", False)),
+        )
         rl_config['active_bundle'] = bundle_path  # Pass bundle path
         legacy_rl_enabled = rl_config.get('enabled', True) and rl_config.get('legacy_dqn_enabled', False)
         self.rl_agent = None
@@ -3506,6 +4006,12 @@ class ProductionCoordinator:
             self.strategy_coordinator.rl_agent = self.rl_agent
             if hasattr(self.strategy_coordinator, 'ppo_adapter'):
                 self.strategy_coordinator.ppo_adapter = self.ppo_adapter
+            refresh_governance = getattr(self.strategy_coordinator, "refresh_ml_governance_modes", None)
+            if callable(refresh_governance):
+                try:
+                    refresh_governance(ml_config)
+                except Exception as exc:
+                    logger.warning("⚠️ StrategyCoordinator governance refresh failed: %s", exc)
             if hasattr(self.strategy_coordinator, 'on_ml_components_connected'):
                 try:
                     self.strategy_coordinator.on_ml_components_connected()
@@ -5902,18 +6408,28 @@ class ProductionCoordinator:
     async def _monitor_rl_telemetry(self):
         """Periodically log RL telemetry stats for diagnostics."""
         logger.info("RL telemetry monitor task started")
-        interval = self.config.get('monitoring', {}).get('rl_telemetry_interval_seconds', 300)
-        interval = max(interval, 60)
-        threshold = (
-            self.config
-            .get('ml', {})
+        monitoring_cfg = self.config.get('monitoring', {}) if isinstance(self.config, dict) else {}
+        base_interval = self._coerce_non_negative_int(
+            monitoring_cfg.get('rl_telemetry_interval_seconds', 300),
+            300,
+        )
+        base_interval = max(base_interval, 60)
+        rl_cfg = (
+            (self.config.get('ml', {}) if isinstance(self.config, dict) else {})
             .get('reinforcement_learning', {})
-            .get('q_std_bypass_threshold', 1e-4)
+        )
+        threshold = self._coerce_non_negative_float(
+            rl_cfg.get('q_std_bypass_threshold', 1e-4) if isinstance(rl_cfg, dict) else 1e-4,
+            1e-4,
         )
 
         try:
             while self.is_running:
-                await asyncio.sleep(interval)
+                automation_cfg = self._get_ml_governance_automation_config()
+                automation_enabled = bool(automation_cfg.get("enabled", False))
+                automation_interval = int(automation_cfg.get("interval_sec", base_interval) or base_interval)
+                loop_interval = min(base_interval, max(60, automation_interval)) if automation_enabled else base_interval
+                await asyncio.sleep(loop_interval)
 
                 if not self.strategy_coordinator:
                     logger.debug("[RL-TELEMETRY] StrategyCoordinator not ready; skipping cycle")
@@ -5964,6 +6480,20 @@ class ProductionCoordinator:
                     ppo_long_votes,
                     ppo_flat_votes,
                 )
+
+                try:
+                    governance_snapshot = self._run_ml_governance_automation_cycle(
+                        stats,
+                        now_monotonic=time.monotonic(),
+                    )
+                    if isinstance(governance_snapshot, dict):
+                        logger.info("ml_governance_snapshot %s", governance_snapshot)
+                except Exception as governance_exc:
+                    logger.error(
+                        "[ML-GOVERNANCE] Automation cycle failed: %s",
+                        governance_exc,
+                        exc_info=True,
+                    )
 
                 if q_std_med < threshold:
                     logger.warning(

@@ -2,6 +2,8 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from config.risk_config import RiskConfiguration
+from core.risk_manager import RiskManager
 from src.core.strategy_coordinator import StrategyCoordinator
 from src.core.risk_rules import VolumeAwarePositionSizingRule
 
@@ -219,6 +221,60 @@ def test_volume_risk_rule_skips_non_analyzer_context():
     assert signal['position_size'] == 5.0
     assert signal['stop_loss_dist'] == 2.0
     assert signal['take_profit_dist'] == 4.0
+
+
+def test_risk_manager_volume_rule_uses_strategy_profile_override():
+    cfg = RiskConfiguration(
+        custom_limits={
+            "equity_usd": 1000.0,
+            "volume_bucket_risk_matrix": {
+                "LOW": {
+                    "position_size_multiplier": 0.5,
+                    "stop_loss_multiplier": 1.3,
+                    "take_profit_multiplier": 0.9,
+                },
+                "NORMAL": {
+                    "position_size_multiplier": 1.0,
+                    "stop_loss_multiplier": 1.0,
+                    "take_profit_multiplier": 1.0,
+                },
+            },
+            "strategy_profiles": {
+                "mean_reversion": {
+                    "volume_bucket_risk_matrix": {
+                        "LOW": {
+                            "stop_loss_multiplier": 1.05,
+                            "take_profit_multiplier": 0.97,
+                        }
+                    }
+                }
+            },
+        }
+    )
+    rm = RiskManager(portfolio_value=1000.0, risk_config=cfg)
+    volume_rule = next(
+        (rule for rule in rm.rules if getattr(rule, "rule_name", "") == "VolumeAwarePositionSizingRule"),
+        None,
+    )
+    assert volume_rule is not None
+
+    signal = {
+        "strategy_name": "mean_reversion",
+        "volume_bucket": "LOW",
+        "volume_ctx_source": "analyzer",
+        "position_size": 1.0,
+        "stop_loss_dist": 100.0,
+        "take_profit_dist": 200.0,
+        "symbol": "BTC/USDT",
+    }
+
+    ok, reason = volume_rule.validate(signal, portfolio_manager={})
+
+    assert ok is True
+    assert "Applied volume bucket LOW" in reason
+    assert signal["position_size"] == pytest.approx(0.5)
+    assert signal["stop_loss_dist"] == pytest.approx(105.0)
+    assert signal["take_profit_dist"] == pytest.approx(194.0)
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,17 @@ except ModuleNotFoundError:
         else:
             raise
 
+try:
+    from core.rr_guard import evaluate_rr_gate
+except ModuleNotFoundError:
+    try:
+        from src.core.rr_guard import evaluate_rr_gate
+    except ModuleNotFoundError as e:
+        if e.name in ("src", "src.core", "src.core.rr_guard"):
+            from .rr_guard import evaluate_rr_gate
+        else:
+            raise
+
 logger = logging.getLogger(__name__)
 
 
@@ -1900,32 +1911,22 @@ class AdvancedPositionManager:
             side=side,
             rebase_meta=rebase_meta,
         )
-        action = "keep"
-        reason_code = None
-        normalized_rr_required: Optional[float] = None
-        if rr_required is not None:
-            try:
-                normalized_rr_required = float(rr_required)
-            except (TypeError, ValueError):
-                normalized_rr_required = None
-            if normalized_rr_required is not None and normalized_rr_required <= 0:
-                normalized_rr_required = None
-
-        if rr_after_fill is not None:
-            if rr_after_fill < 1.0:
-                action = "early_exit"
-                reason_code = "rr_below_1"
-            elif normalized_rr_required is not None and rr_after_fill < normalized_rr_required:
-                # Deterministic drift handling: until reduce-only partial reduce is implemented,
-                # default to early-exit to keep the risk gate consistent.
-                action = "early_exit"
-                reason_code = "rr_below_required"
+        rr_gate = evaluate_rr_gate(
+            rr_after_fill,
+            rr_required=rr_required,
+            rr_required_source=rr_required_source,
+            rr_floor=1.0,
+            # Deterministic drift handling: until reduce-only partial reduce is implemented,
+            # default to early-exit to keep the risk gate consistent.
+            action_on_fail="early_exit",
+        )
         return {
-            "rr_after_fill": rr_after_fill,
-            "rr_required": normalized_rr_required,
-            "rr_required_source": rr_required_source if normalized_rr_required is not None else None,
-            "postfill_action": action,
-            "reason_code": reason_code,
+            "rr_after_fill": rr_gate.get("rr_actual"),
+            "rr_required": rr_gate.get("rr_required"),
+            "rr_required_source": rr_gate.get("rr_required_source"),
+            "rr_floor": rr_gate.get("rr_floor"),
+            "postfill_action": rr_gate.get("action"),
+            "reason_code": rr_gate.get("reason_code"),
         }
 
     async def _refresh_exchange_risk_orders(

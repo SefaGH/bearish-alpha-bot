@@ -47,6 +47,7 @@ class _SymbolState:
     last_vwap_calc_key: Optional[tuple[int, int, Any]]
     last_vwap_calc_vwap: Optional[float]
     last_vwap_calc_std: Optional[float]
+    last_effective_std: Optional[float]
 
 
 class DynamicMRController:
@@ -78,6 +79,39 @@ class DynamicMRController:
 
         self._freeze_on_trend = bool(self._cfg.get("freeze_on_trend", True))
         self._adx_freeze_threshold = float(self._cfg.get("adx_freeze_threshold", 25.0))
+        low_adx_freeze = self._cfg.get(
+            "adx_consolidation_freeze_threshold",
+            self._cfg.get("consolidation_freeze_adx"),
+        )
+        try:
+            self._adx_consolidation_freeze_threshold = float(low_adx_freeze) if low_adx_freeze is not None else None
+            if (
+                self._adx_consolidation_freeze_threshold is not None
+                and (not math.isfinite(self._adx_consolidation_freeze_threshold) or self._adx_consolidation_freeze_threshold <= 0)
+            ):
+                self._adx_consolidation_freeze_threshold = None
+        except Exception:
+            self._adx_consolidation_freeze_threshold = None
+
+        double_squeeze_cfg = self._cfg.get("double_squeeze_detection", {})
+        if not isinstance(double_squeeze_cfg, dict):
+            double_squeeze_cfg = {}
+        raw_action = str(double_squeeze_cfg.get("action", "off") or "off").strip().lower()
+        self._double_squeeze_freeze_enabled = bool(
+            double_squeeze_cfg.get("enabled", False) or raw_action == "freeze"
+        )
+        try:
+            self._double_squeeze_std_pct_threshold = float(
+                double_squeeze_cfg.get("std_pct_threshold", -30.0)
+            )
+        except Exception:
+            self._double_squeeze_std_pct_threshold = -30.0
+        try:
+            self._double_squeeze_multiplier_pct_threshold = float(
+                double_squeeze_cfg.get("multiplier_pct_threshold", -20.0)
+            )
+        except Exception:
+            self._double_squeeze_multiplier_pct_threshold = -20.0
 
         lookback_cfg = self._cfg.get("dynamic_lookback", {}) if isinstance(self._cfg.get("dynamic_lookback"), dict) else {}
         self._dyn_lookback_enabled = bool(lookback_cfg.get("enabled", False))
@@ -174,6 +208,7 @@ class DynamicMRController:
             last_vwap_calc_key=None,
             last_vwap_calc_vwap=None,
             last_vwap_calc_std=None,
+            last_effective_std=None,
         )
         self._state_by_symbol[symbol] = state
         return state
@@ -377,11 +412,19 @@ class DynamicMRController:
 
         reason = "updated"
         should_update = True
-        if self._freeze_on_trend and adx is not None and math.isfinite(adx) and adx >= self._adx_freeze_threshold:
-            should_update = False
-            reason = "freeze_on_trend"
-        elif (
-            state.last_update_ts is not None
+        if self._freeze_on_trend and adx is not None and math.isfinite(adx):
+            if adx >= self._adx_freeze_threshold:
+                should_update = False
+                reason = "freeze_on_trend_high_adx"
+            elif (
+                self._adx_consolidation_freeze_threshold is not None
+                and adx <= self._adx_consolidation_freeze_threshold
+            ):
+                should_update = False
+                reason = "freeze_on_trend_low_adx"
+        if (
+            should_update
+            and state.last_update_ts is not None
             and self._update_interval_sec > 0
             and (ts - state.last_update_ts).total_seconds() < self._update_interval_sec
         ):
@@ -444,6 +487,19 @@ class DynamicMRController:
             if math.isfinite(abs_z):
                 state.abs_z_hist.append(float(abs_z))
 
+        m_candidate: Optional[float] = None
+        if should_update:
+            m_candidate = self._compute_band_multiplier(state)
+            if self._double_squeeze_freeze_enabled:
+                if self._should_freeze_double_squeeze(
+                    prev_std=state.last_effective_std,
+                    new_std=std_eff,
+                    prev_multiplier=m_prev,
+                    new_multiplier=m_candidate,
+                ):
+                    should_update = False
+                    reason = "freeze_double_squeeze"
+
         if not should_update:
             lower = float(vwap_eff) - (m_prev * float(std_eff))
             upper = float(vwap_eff) + (m_prev * float(std_eff))
@@ -476,7 +532,7 @@ class DynamicMRController:
                 current_15s_volume=current_15s_volume,
             )
 
-        m_eff = self._compute_band_multiplier(state)
+        m_eff = float(m_candidate) if m_candidate is not None else self._compute_band_multiplier(state)
 
         lower = vwap_eff - (m_eff * std_eff)
         upper = vwap_eff + (m_eff * std_eff)
@@ -486,6 +542,7 @@ class DynamicMRController:
         state.last_band_multiplier = m_eff
         state.last_lookback = lookback_eff
         state.last_vol_state = vol_state
+        state.last_effective_std = float(std_eff) if math.isfinite(std_eff) and std_eff > 0 else state.last_effective_std
 
         decision = MRControllerDecision(
             enabled=True,
@@ -507,19 +564,59 @@ class DynamicMRController:
             vol_state=str(vol_state) if vol_state is not None else None,
         )
 
+        pre_overlay = {
+            "band_multiplier": float(decision.band_multiplier),
+            "vwap": float(decision.vwap),
+            "lower": float(decision.lower),
+            "upper": float(decision.upper),
+            "reason": str(decision.reason),
+        }
+
+        decision = self._apply_adaptive_overlay(
+            symbol=symbol,
+            price=price,
+            base_vwap=float(vwap_eff),
+            base_std=float(std_eff),
+            decision=decision,
+            current_15s_volume=current_15s_volume,
+        )
+
         if self._log_every_update:
+            def _changed(lhs: object, rhs: object) -> bool:
+                try:
+                    lhs_f = float(lhs)
+                    rhs_f = float(rhs)
+                except Exception:
+                    return str(lhs) != str(rhs)
+                if not math.isfinite(lhs_f) or not math.isfinite(rhs_f):
+                    return str(lhs) != str(rhs)
+                return not math.isclose(lhs_f, rhs_f, rel_tol=0.0, abs_tol=1e-12)
+
+            overlay_applied = (
+                _changed(pre_overlay["band_multiplier"], decision.band_multiplier)
+                or _changed(pre_overlay["vwap"], decision.vwap)
+                or _changed(pre_overlay["lower"], decision.lower)
+                or _changed(pre_overlay["upper"], decision.upper)
+                or str(pre_overlay["reason"]) != str(decision.reason)
+            )
+
             payload = {
                 "event": "mr_controller_decision",
                 "symbol": symbol,
                 "ts_utc": self._to_utc_iso(ts),
                 "params": {
                     "band_multiplier_prev": m_prev,
+                    "band_multiplier_pre_overlay": pre_overlay["band_multiplier"],
                     "band_multiplier_new": decision.band_multiplier,
                     "lookback_prev": lookback_prev,
                     "lookback_new": decision.lookback,
                     "vol_state_prev": vol_state_prev,
                     "vol_state_new": vol_state,
                     "update_interval_sec": self._update_interval_sec,
+                    "adx_freeze_high_threshold": self._adx_freeze_threshold,
+                    "adx_freeze_low_threshold": self._adx_consolidation_freeze_threshold,
+                    "double_squeeze_freeze_enabled": bool(self._double_squeeze_freeze_enabled),
+                    "overlay_applied": bool(overlay_applied),
                 },
                 "inputs": {
                     "px": price,
@@ -538,21 +635,17 @@ class DynamicMRController:
                     "achieved_outside_rate": decision.current_outside_pct,
                     "outside_rate_window_size": len(state.abs_z_hist),
                     "abs_z_hist_len": len(state.abs_z_hist),
+                    "lower_pre_overlay": pre_overlay["lower"],
+                    "upper_pre_overlay": pre_overlay["upper"],
                     "lower": decision.lower,
                     "upper": decision.upper,
                 },
+                "reason_pre_overlay": pre_overlay["reason"],
                 "reason": decision.reason,
             }
             logger.info(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
 
-        return self._apply_adaptive_overlay(
-            symbol=symbol,
-            price=price,
-            base_vwap=float(vwap_eff),
-            base_std=float(std_eff),
-            decision=decision,
-            current_15s_volume=current_15s_volume,
-        )
+        return decision
 
     def _static_decision(
         self,
@@ -678,6 +771,43 @@ class DynamicMRController:
         if abs(m_clamped - m_prev) < self._min_m_change:
             return m_prev
         return float(m_clamped)
+
+    def _should_freeze_double_squeeze(
+        self,
+        *,
+        prev_std: Optional[float],
+        new_std: float,
+        prev_multiplier: float,
+        new_multiplier: float,
+    ) -> bool:
+        """Detect simultaneous std + multiplier contraction and veto update."""
+        try:
+            prev_std_val = float(prev_std) if prev_std is not None else float("nan")
+            new_std_val = float(new_std)
+            prev_mult_val = float(prev_multiplier)
+            new_mult_val = float(new_multiplier)
+        except Exception:
+            return False
+
+        if (
+            not math.isfinite(prev_std_val)
+            or prev_std_val <= 0
+            or not math.isfinite(new_std_val)
+            or new_std_val <= 0
+            or not math.isfinite(prev_mult_val)
+            or prev_mult_val <= 0
+            or not math.isfinite(new_mult_val)
+            or new_mult_val <= 0
+        ):
+            return False
+
+        std_change_pct = ((new_std_val - prev_std_val) / prev_std_val) * 100.0
+        mult_change_pct = ((new_mult_val - prev_mult_val) / prev_mult_val) * 100.0
+
+        return (
+            std_change_pct <= float(self._double_squeeze_std_pct_threshold)
+            and mult_change_pct <= float(self._double_squeeze_multiplier_pct_threshold)
+        )
 
     def _compute_lookback(self, *, prev_state: Optional[str], price: float, atr: Optional[float]) -> tuple[int, Optional[str], Optional[float]]:
         if not self._dyn_lookback_enabled:

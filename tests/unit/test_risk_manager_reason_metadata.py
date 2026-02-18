@@ -123,3 +123,54 @@ async def test_risk_manager_rejection_reason_codes(monkeypatch, scenario: str, e
     assert meta.get("blocked_by")
     assert meta.get("validation_reason") or meta.get("planner_reason")
     json.dumps(meta)
+
+
+@pytest.mark.asyncio
+async def test_rr_rule_rejection_uses_prefill_reason_code_and_meta(monkeypatch):
+    monkeypatch.setenv("RISK_SIZE_PLANNER_ENABLED", "0")
+    cfg = RiskConfiguration(
+        custom_limits={
+            "equity_usd": 1000.0,
+            "rr_dynamic": {
+                "enabled": True,
+                "base_target_rr": 0.8,
+                "lower_bound_rr": 0.8,
+                "upper_bound_rr": 2.0,
+                "weights": {
+                    "ml_confidence": 0.0,
+                    "rl_agreement": 0.0,
+                    "regime_clarity": 0.0,
+                    "volume_strength": 0.0,
+                    "momentum_strength": 0.0,
+                },
+                "fallback": {
+                    "missing_ml_default": 0.5,
+                    "missing_rl_default": 0.5,
+                    "missing_regime_default": 0.3,
+                },
+                "regime_multipliers": {
+                    "neutral": 1.0,
+                },
+            },
+        }
+    )
+    rm = RiskManager(portfolio_value=1000.0, risk_config=cfg)
+    pm = DummyPortfolioManager(equity=1000.0)
+    signal = _base_signal()
+    signal.update(
+        {
+            "stop": 99.0,
+            "target": 100.9,  # R/R = 0.9, should fail pre-fill hard floor 1.0
+            "regime_name": "neutral",
+            "strategy_min_rr": 0.5,
+        }
+    )
+
+    ok, _, meta = await rm.size_and_validate_position(signal, pm)
+    assert ok is False
+    assert meta.get("reason_code") == "risk.rr.pre_fill.rr_below_1"
+    risk_metrics = meta.get("risk_metrics", {})
+    assert isinstance(risk_metrics, dict)
+    rr_meta = risk_metrics.get("rr_gate_prefill", {})
+    assert rr_meta.get("reason_code") == "rr_below_1"
+    assert rr_meta.get("action") == "reject"

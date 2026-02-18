@@ -565,6 +565,8 @@ class StrategyCoordinator:
     Coordinate signals and positions across multiple strategies.
     Enhanced with GEMMA AI-Gate (Phase 5).
     """
+    ML_GOVERNANCE_ALLOWED_MODES = {"apply", "shadow", "disabled"}
+    _PPO_GOVERNANCE_REASON_PREFIX = "ml.governance.ppo"
     
     # __init__ metodundan 'indicator_manager' kaldırıldı.
     def __init__(self, portfolio_manager, risk_manager, market_data_pipeline=None, config=None, **kwargs):
@@ -582,6 +584,9 @@ class StrategyCoordinator:
         self.risk_manager = risk_manager
         self.market_data_pipeline = market_data_pipeline
         self.config = config or {}
+        self._ml_governance_modes = self._resolve_ml_governance_modes(
+            self.config.get("ml", {}) if isinstance(self.config, dict) else {}
+        )
         callback = kwargs.get("recheck_ready_callback")
         self._recheck_ready_callback = callback if callable(callback) else None
         self._initial_equity = self._derive_initial_equity()
@@ -696,6 +701,7 @@ class StrategyCoordinator:
         self.last_signal_time = {}  # "symbol:strategy" -> timestamp
         self.last_signal_rsi = {}  # "symbol:strategy" -> last observed RSI
         self.signal_price_history = defaultdict(list)  # symbol -> [(timestamp, price), ...]
+        self._same_signal_last_time: Dict[str, float] = {}  # "strategy:symbol:tf:side:px_bucket" -> ts
         self._dca_last_signal_time = defaultdict(float)  # symbol -> ts
         self._dca_recent_layers = defaultdict(dict)  # symbol -> {layer_index: ts}
         self.rsi_session_state = {}  # symbol -> {'active': True, 'anchor_price': float, 'side': 'long'}
@@ -715,6 +721,8 @@ class StrategyCoordinator:
             'rejected_signals': 0,
             'conflicted_signals': 0,
             'duplicate_rejections': 0,
+            'quality_gate_rejections': 0,
+            'prefill_rr_rejections': 0,
             'last_signal_time': None,
             'cooldown_bypasses': 0,
             'bypass_success_rate': 0.0,
@@ -722,12 +730,15 @@ class StrategyCoordinator:
             'last_bypass_time': None,
             'rejected_cooldown': 0,
             'rejected_price_delta': 0,
+            'same_signal_rejections': 0,
             'ai_gate_rejections': 0,  # Phase 5: GEMMA AI-Gate rejections
             'approved_signals': 0,  # Phase 5: Signals approved for execution
             'rl_veto_count': 0,
             'rl_skipped_signals': 0,
             'bypass_approvals': 0,
-            'queue_rejections': 0
+            'queue_rejections': 0,
+            'band_snapshot_checks': 0,
+            'band_snapshot_mismatch_count': 0,
         }
         self.rl_telemetry = {
             'total_decisions': 0,
@@ -755,7 +766,10 @@ class StrategyCoordinator:
         self.ml_integration = None
         self.feature_pipeline = None
         self.rl_agent = None
-        rl_cfg = (self.config.get('ml', {}) or {}).get('reinforcement_learning', {})
+        rl_cfg = dict(((self.config.get('ml', {}) or {}).get('reinforcement_learning', {}) or {}))
+        rl_cfg["ppo_mode"] = self._ml_governance_modes.get("ppo_mode", "apply")
+        if self._ml_governance_modes.get("ppo_mode") == "disabled":
+            rl_cfg["ppo_enabled"] = False
         self._rl_config = rl_cfg
         self.legacy_rl_enabled = bool(rl_cfg.get('legacy_dqn_enabled', False))
         self.disable_legacy_rl_when_ppo_enabled = bool(
@@ -778,8 +792,15 @@ class StrategyCoordinator:
 
         # GEMMA Adapter initialization (Phase 5)
         self.gemma_adapter = None
-        if self.config.get('ml', {}).get('gemma', {}).get('enabled', False):
+        gemma_cfg = (self.config.get('ml', {}) or {}).get('gemma', {}) if isinstance(self.config, dict) else {}
+        gemma_enabled = bool(gemma_cfg.get('enabled', False)) and self._ml_governance_modes.get("gemma_mode") != "disabled"
+        if gemma_enabled:
             self._initialize_gemma()
+        logger.info(
+            "🧠 [ML-GOVERNANCE] StrategyCoordinator modes | gemma=%s | ppo=%s",
+            self._ml_governance_modes.get("gemma_mode"),
+            self._ml_governance_modes.get("ppo_mode"),
+        )
 
         incubator_cfg = {}
         try:
@@ -1282,6 +1303,80 @@ class StrategyCoordinator:
         except Exception as exc:
             logger.debug("[CRASH-GUARD] handle_trade_closed failed: %s", exc)
 
+    @classmethod
+    def _normalize_ml_governance_mode(cls, value: Any, *, default: str = "apply") -> str:
+        default_mode = str(default or "apply").strip().lower()
+        if default_mode not in cls.ML_GOVERNANCE_ALLOWED_MODES:
+            default_mode = "apply"
+        mode = str(value or default_mode).strip().lower()
+        if mode not in cls.ML_GOVERNANCE_ALLOWED_MODES:
+            logger.warning(
+                "⚠️ [ML-GOVERNANCE] Invalid mode '%s'; falling back to '%s'. Allowed=%s",
+                value,
+                default_mode,
+                sorted(cls.ML_GOVERNANCE_ALLOWED_MODES),
+            )
+            return default_mode
+        return mode
+
+    @classmethod
+    def _resolve_ml_governance_modes(cls, ml_cfg: Dict[str, Any]) -> Dict[str, str]:
+        governance_cfg = ml_cfg.get("governance", {}) if isinstance(ml_cfg, dict) else {}
+        if not isinstance(governance_cfg, dict):
+            governance_cfg = {}
+
+        gemma_cfg = ml_cfg.get("gemma", {}) if isinstance(ml_cfg, dict) else {}
+        if not isinstance(gemma_cfg, dict):
+            gemma_cfg = {}
+
+        raw_gemma_mode = governance_cfg.get("gemma_mode")
+        # Backward-compat: infer shadow default from legacy gemma.shadow_mode when governance key is absent.
+        if raw_gemma_mode is None and bool(gemma_cfg.get("shadow_mode", False)):
+            raw_gemma_mode = "shadow"
+
+        raw_ppo_mode = governance_cfg.get("ppo_mode")
+        return {
+            "gemma_mode": cls._normalize_ml_governance_mode(raw_gemma_mode, default="apply"),
+            "ppo_mode": cls._normalize_ml_governance_mode(raw_ppo_mode, default="apply"),
+        }
+
+    def refresh_ml_governance_modes(self, ml_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        source_ml = ml_cfg if isinstance(ml_cfg, dict) else (
+            self.config.get("ml", {}) if isinstance(self.config, dict) else {}
+        )
+        if not isinstance(source_ml, dict):
+            source_ml = {}
+
+        modes = self._resolve_ml_governance_modes(source_ml)
+        self._ml_governance_modes = dict(modes)
+
+        if isinstance(self.config, dict):
+            ml_root = self.config.setdefault("ml", {})
+            if isinstance(ml_root, dict):
+                ml_root["governance"] = dict(modes)
+
+        rl_cfg = dict((source_ml.get("reinforcement_learning", {}) or {}))
+        rl_cfg["ppo_mode"] = modes.get("ppo_mode", "apply")
+        if modes.get("ppo_mode") == "disabled":
+            rl_cfg["ppo_enabled"] = False
+        self._rl_config = rl_cfg
+        return modes
+
+    def _get_ppo_governance_mode(self) -> str:
+        mode = (self._ml_governance_modes or {}).get("ppo_mode")
+        if mode is None:
+            mode = (self._rl_config or {}).get("ppo_mode")
+        return self._normalize_ml_governance_mode(mode, default="apply")
+
+    def _is_ppo_decision_effective(self) -> bool:
+        return self._get_ppo_governance_mode() == "apply"
+
+    def _get_ppo_governance_reason_code(self, suffix: Optional[str] = None) -> str:
+        base = f"{self._PPO_GOVERNANCE_REASON_PREFIX}.{self._get_ppo_governance_mode()}"
+        if suffix:
+            return f"{base}.{suffix}"
+        return base
+
     @staticmethod
     def _now_ms() -> int:
         return int(time.time() * 1000)
@@ -1296,6 +1391,22 @@ class StrategyCoordinator:
             return None
         mapping = {"buy": "long", "long": "long", "sell": "short", "short": "short"}
         return mapping.get(raw)
+
+    @staticmethod
+    def _normalize_price_bucket(entry_price: float, quantum: float) -> float:
+        try:
+            px = float(entry_price)
+            q = float(quantum)
+        except Exception:
+            return float("nan")
+        if not math.isfinite(px) or px <= 0:
+            return float("nan")
+        if not math.isfinite(q) or q <= 0:
+            return px
+        try:
+            return round(px / q) * q
+        except Exception:
+            return px
 
     def _normalize_signal_side(self, signal: Dict[str, Any]) -> None:
         if not isinstance(signal, dict):
@@ -5206,12 +5317,21 @@ class StrategyCoordinator:
             from src.ml.manifest_manager import ManifestManager
             
             gemma_config = self.config['ml']['gemma'].copy()
+            gemma_mode = (self._ml_governance_modes or {}).get("gemma_mode", "apply")
+
+            if gemma_mode == "disabled":
+                logger.info("🧠 GEMMA disabled via governance (ml.governance.gemma_mode=disabled); skipping adapter init.")
+                self.gemma_adapter = None
+                return
 
             # Single operational flag: ml.gemma.enabled
             if isinstance(gemma_config, dict) and gemma_config.get("enabled", True) is False:
                 logger.info("🧠 GEMMA disabled via config (ml.gemma.enabled=false); skipping adapter init.")
                 self.gemma_adapter = None
                 return
+            if isinstance(gemma_config, dict) and gemma_mode == "shadow":
+                gemma_config["shadow_mode"] = True
+            logger.info("🧠 [ML-GOVERNANCE] GEMMA init mode=%s", gemma_mode)
             
             # Load manifest for GEMMA configuration
             try:
@@ -5409,8 +5529,96 @@ class StrategyCoordinator:
             cooldown = base_cooldown
 
         symbol = signal.get('symbol')
-        entry_price = signal.get('entry', 0)
+        entry_price_val = self._coerce_float(signal.get('entry'))
+        if entry_price_val is None:
+            entry_price_val = self._coerce_float(signal.get('entry_price') or signal.get('price'))
+        entry_price = float(entry_price_val) if entry_price_val is not None else 0.0
+        side_norm = self._normalize_side(signal.get("side"))
+        timeframe_norm = str(signal.get("timeframe") or signal.get("tf") or "na").strip().lower() or "na"
         current_time = time.time()
+
+        # Optional same-signal cooldown: blocks repeated signals at (symbol + timeframe + side + signal_px bucket).
+        same_signal_cooldown = 0.0
+        same_signal_tick_size = 0.0
+        same_signal_tolerance_pct = 0.0
+        same_signal_tolerance_bps = 0.0
+        try:
+            same_signal_cooldown = float(dup_config.get("same_signal_cooldown_seconds", 0) or 0)
+        except Exception:
+            same_signal_cooldown = 0.0
+        try:
+            same_signal_tick_size = float(dup_config.get("same_signal_tick_size", 0) or 0)
+        except Exception:
+            same_signal_tick_size = 0.0
+        try:
+            same_signal_tolerance_pct = float(dup_config.get("same_signal_price_tolerance_pct", 0) or 0)
+        except Exception:
+            same_signal_tolerance_pct = 0.0
+        try:
+            same_signal_tolerance_bps = float(dup_config.get("same_signal_price_tolerance_bps", 0) or 0)
+        except Exception:
+            same_signal_tolerance_bps = 0.0
+
+        same_signal_key: Optional[str] = None
+        same_signal_bucket: Optional[float] = None
+
+        if (
+            same_signal_cooldown > 0
+            and intent in (INTENT_ENTRY, INTENT_REENTRY)
+            and symbol
+            and side_norm in ("long", "short")
+            and entry_price > 0
+        ):
+            abs_candidates = []
+            if same_signal_tick_size > 0:
+                abs_candidates.append(float(same_signal_tick_size))
+            if same_signal_tolerance_pct > 0:
+                abs_candidates.append(float(entry_price) * float(same_signal_tolerance_pct))
+            if same_signal_tolerance_bps > 0:
+                abs_candidates.append(float(entry_price) * (float(same_signal_tolerance_bps) / 10000.0))
+            quantum = max(abs_candidates) if abs_candidates else 0.0
+
+            bucket = self._normalize_price_bucket(float(entry_price), float(quantum))
+            if math.isfinite(bucket):
+                same_signal_bucket = float(bucket)
+                same_signal_key = (
+                    f"{strategy_name}:{symbol}:{timeframe_norm}:{side_norm}:{same_signal_bucket:.10f}"
+                )
+
+            # Keep tracker bounded (best-effort lazy cleanup).
+            if len(self._same_signal_last_time) > 4096:
+                cutoff = float(current_time) - float(max(same_signal_cooldown, 1.0))
+                self._same_signal_last_time = {
+                    k: v for k, v in self._same_signal_last_time.items() if float(v) >= cutoff
+                }
+
+            if same_signal_key:
+                last_same_ts = self._same_signal_last_time.get(same_signal_key)
+                if last_same_ts is not None:
+                    elapsed_same = float(current_time) - float(last_same_ts)
+                    if elapsed_same < float(same_signal_cooldown):
+                        remaining_same = float(same_signal_cooldown) - float(elapsed_same)
+                        self.processing_stats['rejected_cooldown'] += 1
+                        self.processing_stats['same_signal_rejections'] = (
+                            self.processing_stats.get('same_signal_rejections', 0) + 1
+                        )
+                        logger.warning(
+                            "❌ [DUPLICATE-REJECT] Same-signal cooldown active | sym=%s | strat=%s | side=%s | tf=%s | signal_px=%.4f | remaining=%.1fs",
+                            symbol,
+                            strategy_name,
+                            side_norm,
+                            timeframe_norm,
+                            same_signal_bucket if same_signal_bucket is not None else float(entry_price),
+                            remaining_same,
+                        )
+                        return (
+                            False,
+                            f"Duplicate prevention: Same-signal cooldown: {remaining_same:.0f}s remaining",
+                        )
+
+        def _remember_same_signal_if_applicable() -> None:
+            if same_signal_key:
+                self._same_signal_last_time[same_signal_key] = float(current_time)
         
         # Create combined key: "symbol:strategy"
         signal_key = f"{symbol}:{strategy_name}"
@@ -5546,6 +5754,7 @@ class StrategyCoordinator:
                     elapsed_time or 0.0,
                     cooldown,
                 )
+                _remember_same_signal_if_applicable()
                 return True, "OK (scale_in_soft_guard)"
             # Step 3a: Get last price from history
             if symbol in self.signal_price_history and entry_price > 0:
@@ -5587,6 +5796,7 @@ class StrategyCoordinator:
                         if current_rsi is not None:
                             self.last_signal_rsi[signal_key] = current_rsi
 
+                        _remember_same_signal_if_applicable()
                         return (
                             True,
                             f"Better price found (diff > {IMPROVEMENT_THRESHOLD*100:.2f}%) "
@@ -5637,6 +5847,7 @@ class StrategyCoordinator:
                             if current_rsi is not None:
                                 self.last_signal_rsi[signal_key] = current_rsi
 
+                            _remember_same_signal_if_applicable()
                             return True, f"OK (price delta bypass: {price_delta*100:.2f}%)"
 
                         # Step 3d: ELSE, reject with price delta info
@@ -5691,6 +5902,7 @@ class StrategyCoordinator:
             cooldown,
             effective_min_price_change,
         )
+        _remember_same_signal_if_applicable()
         
         return True, "OK"
 
@@ -5798,10 +6010,12 @@ class StrategyCoordinator:
         cooldown_bypasses = self.processing_stats.get('cooldown_bypasses', 0)
         rejected_cooldown = self.processing_stats.get('rejected_cooldown', 0)
         rejected_price_delta = self.processing_stats.get('rejected_price_delta', 0)
+        same_signal_rejections = self.processing_stats.get('same_signal_rejections', 0)
         duplicate_rejections = self.processing_stats.get('duplicate_rejections', 0)
         
         # Calculate rates
         bypass_rate = (cooldown_bypasses / total_signals * 100) if total_signals > 0 else 0.0
+        same_signal_repeat_rate = (same_signal_rejections / total_signals * 100) if total_signals > 0 else 0.0
         
         return {
             'total_signals_processed': total_signals,
@@ -5811,10 +6025,13 @@ class StrategyCoordinator:
             'avg_bypass_price_delta': round(self.processing_stats.get('avg_bypass_price_delta', 0.0), 2),
             'rejected_by_cooldown': rejected_cooldown,
             'rejected_by_price_delta': rejected_price_delta,
+            'rejected_by_same_signal': same_signal_rejections,
+            'same_signal_repeat_rate': round(same_signal_repeat_rate, 4),
             'rejection_breakdown': {
                 'cooldown_only': rejected_cooldown,
                 'insufficient_price_delta': rejected_price_delta,
-                'total': rejected_cooldown + rejected_price_delta
+                'same_signal': same_signal_rejections,
+                'total': rejected_cooldown + rejected_price_delta + same_signal_rejections
             },
             'last_bypass_time': self.processing_stats.get('last_bypass_time')
         }
@@ -5961,6 +6178,105 @@ class StrategyCoordinator:
             return None
 
 
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            return float(value) if value is not None else None
+        except Exception:
+            return None
+
+    def _extract_band_snapshot(self, signal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(signal, dict):
+            return None
+
+        raw = signal.get("band_snapshot")
+        if isinstance(raw, dict):
+            snapshot: Dict[str, Any] = {
+                "source": str(raw.get("source") or "unknown"),
+                "lower": self._safe_float(raw.get("lower")),
+                "upper": self._safe_float(raw.get("upper")),
+                "vwap": self._safe_float(raw.get("vwap")),
+                "vwap_std": self._safe_float(raw.get("vwap_std")),
+                "band_multiplier": self._safe_float(raw.get("band_multiplier")),
+                "controller_reason": str(raw.get("controller_reason") or "unknown"),
+                "ts_utc": raw.get("ts_utc"),
+            }
+            lookback = raw.get("lookback")
+            try:
+                snapshot["lookback"] = int(lookback) if lookback is not None else None
+            except Exception:
+                snapshot["lookback"] = None
+            if raw.get("controller_updated") is not None:
+                snapshot["controller_updated"] = bool(raw.get("controller_updated"))
+            return snapshot
+
+        lower = self._safe_float(signal.get("vwap_lower"))
+        upper = self._safe_float(signal.get("vwap_upper"))
+        vwap = self._safe_float(signal.get("vwap"))
+        if lower is None and upper is None and vwap is None:
+            return None
+        return {
+            "source": str(signal.get("band_source") or "legacy_signal_fields"),
+            "lower": lower,
+            "upper": upper,
+            "vwap": vwap,
+            "vwap_std": self._safe_float(signal.get("vwap_std")),
+            "band_multiplier": self._safe_float(signal.get("band_multiplier_effective")),
+            "controller_reason": str(((signal.get("mr_controller") or {}) if isinstance(signal.get("mr_controller"), dict) else {}).get("reason") or "unknown"),
+            "ts_utc": None,
+        }
+
+    def _record_band_snapshot_consistency(
+        self,
+        signal: Dict[str, Any],
+        band_snapshot: Optional[Dict[str, Any]],
+    ) -> None:
+        if not isinstance(signal, dict) or not isinstance(band_snapshot, dict):
+            return
+
+        sig_lower = self._safe_float(signal.get("vwap_lower"))
+        sig_upper = self._safe_float(signal.get("vwap_upper"))
+        snap_lower = self._safe_float(band_snapshot.get("lower"))
+        snap_upper = self._safe_float(band_snapshot.get("upper"))
+
+        if sig_lower is None or sig_upper is None or snap_lower is None or snap_upper is None:
+            return
+
+        tol_abs = 1e-6
+        try:
+            cfg = self.config if isinstance(self.config, dict) else {}
+            tol_cfg = ((cfg.get("signals") or {}).get("band_snapshot_consistency") or {})
+            tol_abs = float(tol_cfg.get("mismatch_tolerance_abs", tol_abs))
+            if not math.isfinite(tol_abs) or tol_abs < 0:
+                tol_abs = 1e-6
+        except Exception:
+            tol_abs = 1e-6
+
+        self.processing_stats["band_snapshot_checks"] = int(
+            self.processing_stats.get("band_snapshot_checks", 0)
+        ) + 1
+
+        lower_mismatch = abs(float(sig_lower) - float(snap_lower)) > float(tol_abs)
+        upper_mismatch = abs(float(sig_upper) - float(snap_upper)) > float(tol_abs)
+        if not (lower_mismatch or upper_mismatch):
+            return
+
+        self.processing_stats["band_snapshot_mismatch_count"] = int(
+            self.processing_stats.get("band_snapshot_mismatch_count", 0)
+        ) + 1
+
+        logger.warning(
+            "band_snapshot_mismatch symbol=%s strategy=%s source=%s tol_abs=%.8f sig_lower=%s snap_lower=%s sig_upper=%s snap_upper=%s",
+            signal.get("symbol"),
+            signal.get("strategy_name") or signal.get("strategy"),
+            band_snapshot.get("source"),
+            float(tol_abs),
+            sig_lower,
+            snap_lower,
+            sig_upper,
+            snap_upper,
+        )
+
     def emit_signal_breakdown(self, signal: Dict[str, Any], quality_result: Dict[str, Any]) -> None:
         """
         Log structured JSON breakdown of the signal for observability.
@@ -5971,20 +6287,14 @@ class StrategyCoordinator:
         if quality_score <= 0.0:
             logger.warning(f"⚠️ [QUALITY-ALERT] Signal quality is 0.0 for {signal.get('symbol')}! Reasons: {quality_result.get('reason')}")
 
-        def _sf(v: Any) -> Optional[float]:
-            try:
-                return float(v) if v is not None else None
-            except Exception:
-                return None
-
-        entry_price = _sf(signal.get("entry_price") or signal.get("entry") or signal.get("price"))
-        stop_price = _sf(
+        entry_price = self._safe_float(signal.get("entry_price") or signal.get("entry") or signal.get("price"))
+        stop_price = self._safe_float(
             signal.get("stop_price")
             or signal.get("stop")
             or signal.get("stop_loss")
             or signal.get("stop_loss_price")
         )
-        target_price = _sf(
+        target_price = self._safe_float(
             signal.get("target_price")
             or signal.get("target")
             or signal.get("take_profit")
@@ -6008,6 +6318,9 @@ class StrategyCoordinator:
             "target_price": target_price,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+        band_snapshot = self._extract_band_snapshot(signal)
+        if isinstance(band_snapshot, dict):
+            breakdown["band_snapshot"] = band_snapshot
 
         # Advanced volatility telemetry (best-effort): strategies may populate
         # `signal["meta"]["vol_telemetry"]` but logs previously omitted it.
@@ -6025,11 +6338,11 @@ class StrategyCoordinator:
                 if isinstance(getattr(self, "config", None), dict)
                 else None,
                 "selected_estimator": meta.get("vol_selected_estimator") or signal.get("vol_selected_estimator") or "std",
-                "vol_rs_bps": _sf(vol_tel.get("rs_bps")),
-                "vol_gk_bps": _sf(vol_tel.get("gk_bps")),
-                "vol_yz_bps": _sf(vol_tel.get("yz_bps")),
-                "vol_atr_bps": _sf(vol_tel.get("atr_bps")),
-                "vol_std_bps": _sf(vol_tel.get("std_bps")),
+                "vol_rs_bps": self._safe_float(vol_tel.get("rs_bps")),
+                "vol_gk_bps": self._safe_float(vol_tel.get("gk_bps")),
+                "vol_yz_bps": self._safe_float(vol_tel.get("yz_bps")),
+                "vol_atr_bps": self._safe_float(vol_tel.get("atr_bps")),
+                "vol_std_bps": self._safe_float(vol_tel.get("std_bps")),
             }
         vsa_shadow = meta.get("vsa_shadow")
         if isinstance(vsa_shadow, dict):
@@ -6041,6 +6354,99 @@ class StrategyCoordinator:
                 "status": vsa_shadow.get("status"),
             }
         logger.info(f"SIGNAL_BREAKDOWN {json.dumps(breakdown)}")
+
+    @staticmethod
+    def _normalize_quality_threshold(value: Any) -> float:
+        try:
+            threshold = float(value)
+        except Exception:
+            return 0.0
+        if not math.isfinite(threshold):
+            return 0.0
+        if threshold > 1.0:
+            threshold = threshold / 100.0
+        return max(0.0, min(1.0, threshold))
+
+    def _resolve_min_quality_score_threshold(self) -> float:
+        cfg = self.config if isinstance(self.config, dict) else {}
+        scoring_cfg = (cfg.get("signals") or {}).get("signal_scoring") or {}
+        if not isinstance(scoring_cfg, dict):
+            return 0.0
+        raw_threshold = scoring_cfg.get("min_quality_score")
+        if raw_threshold is None:
+            raw_threshold = scoring_cfg.get("min_score_to_trade")
+        if raw_threshold is None:
+            return 0.0
+        return self._normalize_quality_threshold(raw_threshold)
+
+    def _is_ml_quality_component_healthy(self, signal: Dict[str, Any]) -> Tuple[bool, str]:
+        if not isinstance(signal, dict):
+            return True, "signal_not_dict"
+
+        explicit_health = signal.get("ml_health_ok")
+        if isinstance(explicit_health, bool):
+            return explicit_health, "ml_health_ok"
+
+        ml_context_healthy = signal.get("ml_context_is_healthy")
+        if isinstance(ml_context_healthy, bool) and not ml_context_healthy:
+            ml_ctx_reason = str(signal.get("ml_context_reason") or "ml_context_unhealthy")
+            return False, f"ml_context:{ml_ctx_reason}"
+
+        ml_meta = signal.get("ml_metadata")
+        if isinstance(ml_meta, dict):
+            ml_meta_health = ml_meta.get("health_ok")
+            if isinstance(ml_meta_health, bool):
+                return ml_meta_health, "ml_metadata.health_ok"
+
+            status = str(ml_meta.get("status") or "").strip().lower()
+            if status in {"error", "failed", "unhealthy", "disabled", "inactive"}:
+                return False, f"ml_metadata.status:{status}"
+
+            reason = str(ml_meta.get("reason") or "").strip().lower()
+            if reason and any(tok in reason for tok in ("error", "failed", "unavailable", "disabled", "exception")):
+                return False, f"ml_metadata.reason:{reason}"
+
+        if bool(signal.get("ml_failed")) or bool(signal.get("ml_error")):
+            return False, "ml_failure_flag"
+
+        return True, "ok"
+
+    def _is_ppo_quality_component_healthy(self, signal: Dict[str, Any]) -> Tuple[bool, str]:
+        if not isinstance(signal, dict):
+            return True, "signal_not_dict"
+
+        side = str(signal.get("side") or "").strip().lower()
+        if side not in ("buy", "long"):
+            return True, "not_applicable_neutral"
+
+        ppo_mode = self._get_ppo_governance_mode()
+        if ppo_mode == "shadow":
+            return False, "governance_shadow"
+        if ppo_mode == "disabled":
+            return False, "governance_disabled"
+
+        ppo_score = signal.get("ppo_long_score")
+        if ppo_score is None:
+            return False, "missing_score"
+
+        ppo_meta = signal.get("ppo_meta")
+        if not isinstance(ppo_meta, dict):
+            # Backward-compat: older paths may provide score without metadata.
+            # In that case keep the component active instead of hard-excluding it.
+            return True, "meta_unavailable_assumed_healthy"
+
+        ppo_health_ok = ppo_meta.get("health_ok")
+        if isinstance(ppo_health_ok, bool) and not ppo_health_ok:
+            return False, "health_ok_false"
+
+        if bool(ppo_meta.get("guard_active", False)):
+            return False, "guard_active"
+
+        ppo_reason = str(ppo_meta.get("reason") or "").strip().lower()
+        if self._is_ppo_rr_reason_inactive(ppo_reason):
+            return False, f"inactive_reason:{ppo_reason or 'n/a'}"
+
+        return True, "ok"
 
     def _compute_signal_quality(self, signal: Dict[str, Any]) -> Dict[str, Any]:
         """Compute and attach quality metrics to a signal (single source of truth)."""
@@ -6144,7 +6550,12 @@ class StrategyCoordinator:
         }
         normal_weights_cfg = scoring_cfg.get("normal_weights") or {}
         weights = {k: float(normal_weights_cfg.get(k, v)) for k, v in default_normal_weights.items()}
-        total_w = max(sum(weights.values()), 1e-6)
+        health_policy_cfg = scoring_cfg.get("health_policy") or {}
+        use_healthy_only = bool(health_policy_cfg.get("use_healthy_components_only", True))
+        ml_require_healthy = bool(health_policy_cfg.get("ml_require_healthy", True))
+        ppo_require_healthy = bool(health_policy_cfg.get("ppo_require_healthy", True))
+        force_disable_ml = bool(health_policy_cfg.get("force_disable_ml", False))
+        force_disable_ppo = bool(health_policy_cfg.get("force_disable_ppo", False))
 
         def _clamp(v: Any, lo: float = 0.0, hi: float = 1.0) -> float:
             try:
@@ -6188,16 +6599,52 @@ class StrategyCoordinator:
 
         spread_component = _clamp(signal.get("spread_component", features.get("spread", 0.5)), 0.0, 1.0)
 
+        ml_healthy, ml_health_reason = self._is_ml_quality_component_healthy(signal)
+        ppo_healthy, ppo_health_reason = self._is_ppo_quality_component_healthy(signal)
+        if force_disable_ml:
+            ml_healthy, ml_health_reason = False, "forced_disabled"
+        if force_disable_ppo:
+            ppo_healthy, ppo_health_reason = False, "forced_disabled"
+
+        effective_weights = dict(weights)
+        excluded_components: List[str] = []
+        quality_reasons: List[str] = []
+        ppo_mode = self._get_ppo_governance_mode()
+
+        def _exclude_component(component: str, reason: str) -> None:
+            effective_weights[component] = 0.0
+            if component not in excluded_components:
+                excluded_components.append(component)
+            quality_reasons.append(reason)
+
+        if ppo_mode != "apply":
+            _exclude_component(
+                "ppo_rl",
+                self._get_ppo_governance_reason_code("quality_excluded"),
+            )
+
+        if use_healthy_only and ml_require_healthy and not ml_healthy:
+            _exclude_component("ml", f"quality.component_excluded.ml:{ml_health_reason}")
+        if use_healthy_only and ppo_require_healthy and not ppo_healthy:
+            _exclude_component("ppo_rl", f"quality.component_excluded.ppo_rl:{ppo_health_reason}")
+
+        active_weight_sum = float(sum(effective_weights.values()))
+        if active_weight_sum <= 1e-6:
+            effective_weights = dict(weights)
+            active_weight_sum = max(sum(effective_weights.values()), 1e-6)
+            excluded_components = []
+            quality_reasons.append("quality.health_policy.fallback_all_weights")
+
         raw_score = (
-            weights["ml"] * ml_component
-            + weights["volume"] * volume_component
-            + weights["momentum"] * momentum_component
-            + weights["regime"] * regime_component
-            + weights["ppo_rl"] * ppo_rl_component
-            + weights["spread"] * spread_component
+            effective_weights["ml"] * ml_component
+            + effective_weights["volume"] * volume_component
+            + effective_weights["momentum"] * momentum_component
+            + effective_weights["regime"] * regime_component
+            + effective_weights["ppo_rl"] * ppo_rl_component
+            + effective_weights["spread"] * spread_component
         )
 
-        base_quality = raw_score / total_w
+        base_quality = raw_score / active_weight_sum
 
         # Optional R/R adjustment (small, controlled)
         rr_ratio = signal.get("rr_ratio") or signal.get("risk_reward_ratio")
@@ -6225,8 +6672,25 @@ class StrategyCoordinator:
                 "spread_component": round(spread_component, 4),
             },
             "weights": {k: round(v, 4) for k, v in weights.items()},
+            "applied_weights": {k: round(v, 4) for k, v in effective_weights.items()},
+            "component_health": {
+                "ml": {
+                    "healthy": bool(ml_healthy),
+                    "reason": ml_health_reason,
+                    "included": bool(effective_weights.get("ml", 0.0) > 0.0),
+                },
+                "ppo_rl": {
+                    "healthy": bool(ppo_healthy),
+                    "reason": ppo_health_reason,
+                    "included": bool(effective_weights.get("ppo_rl", 0.0) > 0.0),
+                },
+            },
+            "excluded_components": excluded_components,
             "rr_adjustment": round(rr_adj, 4),
-            "reason": [],
+            "reason": quality_reasons,
+            "governance": {
+                "ppo_mode": ppo_mode,
+            },
         }
         quality_value = _apply_directional_bias_adjustment(quality_value, quality_result)
         quality_result["value"] = round(quality_value, 4)
@@ -6260,12 +6724,17 @@ class StrategyCoordinator:
             self._normalize_signal_side(signal)
             log_prefix = f"[{strategy_name.upper()}/{symbol}]"
             self._ensure_signal_id(strategy_name, signal)
+            ingress_band_snapshot = self._extract_band_snapshot(signal) or {}
+            self._record_band_snapshot_consistency(signal, ingress_band_snapshot)
             logger.info(
-                "??  %s Signal ingress | side=%s | intent_hint=%s | reason=%s",
+                "??  %s Signal ingress | side=%s | intent_hint=%s | reason=%s | band_source=%s | band_lower=%s | band_upper=%s",
                 log_prefix,
                 signal.get('side', 'N/A'),
                 signal.get('intent', INTENT_ENTRY),
                 signal.get('reason', 'N/A'),
+                ingress_band_snapshot.get("source", "n/a"),
+                ingress_band_snapshot.get("lower"),
+                ingress_band_snapshot.get("upper"),
             )
 
             cooldown_active, cooldown_until = self._is_strategy_in_cooldown(
@@ -7338,6 +7807,56 @@ class StrategyCoordinator:
             
             # Adım 6: Risk Değerlendirmesi
             quality_result = self._compute_signal_quality(enriched_signal)
+            min_quality_score = self._resolve_min_quality_score_threshold()
+            quality_score = self._normalize_quality_threshold(quality_result.get("value", 0.0))
+            intent_for_quality_gate = str(enriched_signal.get("intent", INTENT_ENTRY) or INTENT_ENTRY).strip().lower()
+            quality_gate_enabled = (
+                min_quality_score > 0.0
+                and intent_for_quality_gate not in MAINTENANCE_INTENTS
+                and not bool(enriched_signal.get("extreme_bypass", False))
+            )
+            if quality_gate_enabled and quality_score < min_quality_score:
+                reason_code = "quality.below_min_threshold"
+                reason = (
+                    f"quality_score {quality_score:.3f} below min_quality_score {min_quality_score:.3f}"
+                )
+                self.processing_stats['rejected_signals'] += 1
+                self.processing_stats['quality_gate_rejections'] = (
+                    self.processing_stats.get('quality_gate_rejections', 0) + 1
+                )
+                blocked_item = {
+                    "payload": self._json_sanitize(enriched_signal),
+                    "first_seen_ts_ms": self._now_ms(),
+                    "attempts": 0,
+                    "reason_code": reason_code,
+                    "dedupe_key": enriched_signal.get("dedupe_key"),
+                    "stage": "quality_gate",
+                }
+                self._emit_waiting_room_event(
+                    "waiting_room_drop",
+                    blocked_item,
+                    drop_kind="quality_gate",
+                    drop_reason=reason_code,
+                    quality_score=round(quality_score, 4),
+                    min_quality_score=round(min_quality_score, 4),
+                    quality_reasons=quality_result.get("reason"),
+                    excluded_components=quality_result.get("excluded_components"),
+                )
+                logger.warning(
+                    "🛡️  %s REJECTED (Quality Gate) | reason_code=%s | quality=%.3f | min=%.3f",
+                    log_prefix,
+                    reason_code,
+                    quality_score,
+                    min_quality_score,
+                )
+                return {
+                    'status': 'rejected',
+                    'reason': reason,
+                    'reason_code': reason_code,
+                    'stage': 'quality_gate',
+                    'quality_score': round(quality_score, 4),
+                    'min_quality_score': round(min_quality_score, 4),
+                }
 
             risk_assessment = await self._assess_signal_risk(enriched_signal, strategy_name)
             if not risk_assessment['acceptable']:
@@ -7413,6 +7932,58 @@ class StrategyCoordinator:
                         'reason': risk_reason,
                         'reason_code': risk_reason_code,
                         'stage': 'risk_assessment',
+                    }
+
+                if str(risk_reason_code or "").startswith("risk.rr.pre_fill."):
+                    rr_gate_prefill = risk_metrics.get("rr_gate_prefill", {})
+                    if not isinstance(rr_gate_prefill, dict):
+                        rr_gate_prefill = {}
+                    rr_actual = self._safe_float(rr_gate_prefill.get("rr_actual"))
+                    rr_required = self._safe_float(rr_gate_prefill.get("rr_required"))
+                    rr_floor = self._safe_float(rr_gate_prefill.get("rr_floor"))
+                    rr_required_source = rr_gate_prefill.get("rr_required_source")
+                    rr_base_reason_code = rr_gate_prefill.get("reason_code")
+
+                    self.processing_stats['rejected_signals'] += 1
+                    self.processing_stats['prefill_rr_rejections'] = (
+                        self.processing_stats.get('prefill_rr_rejections', 0) + 1
+                    )
+                    blocked_item = {
+                        "payload": self._json_sanitize(enriched_signal),
+                        "first_seen_ts_ms": self._now_ms(),
+                        "attempts": 0,
+                        "reason_code": str(risk_reason_code),
+                        "dedupe_key": enriched_signal.get("dedupe_key"),
+                        "stage": "risk_assessment",
+                    }
+                    self._emit_waiting_room_event(
+                        "waiting_room_drop",
+                        blocked_item,
+                        drop_kind="pre_fill_rr_gate",
+                        drop_reason=str(risk_reason_code),
+                        rr_reason_code=rr_base_reason_code,
+                        rr_actual=round(rr_actual, 4) if rr_actual is not None else None,
+                        rr_required=round(rr_required, 4) if rr_required is not None else None,
+                        rr_floor=round(rr_floor, 4) if rr_floor is not None else None,
+                        rr_required_source=rr_required_source,
+                    )
+                    logger.warning(
+                        "🛡️  %s REJECTED (Pre-Fill RR Gate) | reason_code=%s | rr_actual=%s | rr_required=%s | rr_floor=%s",
+                        log_prefix,
+                        risk_reason_code,
+                        f"{rr_actual:.3f}" if rr_actual is not None else "na",
+                        f"{rr_required:.3f}" if rr_required is not None else "na",
+                        f"{rr_floor:.3f}" if rr_floor is not None else "na",
+                    )
+                    return {
+                        'status': 'rejected',
+                        'reason': risk_reason,
+                        'reason_code': str(risk_reason_code),
+                        'stage': 'risk_assessment',
+                        'rr_actual': round(rr_actual, 4) if rr_actual is not None else None,
+                        'rr_required': round(rr_required, 4) if rr_required is not None else None,
+                        'rr_floor': round(rr_floor, 4) if rr_floor is not None else None,
+                        'rr_required_source': rr_required_source,
                     }
 
                 if risk_reason_code in (
@@ -7681,6 +8252,7 @@ class StrategyCoordinator:
 
     def on_ml_components_connected(self) -> None:
         """Hook invoked when ML pipelines are wired in (lazily start PPO)."""
+        self.refresh_ml_governance_modes()
         self._initialize_ppo_adapter_if_ready()
 
     def _initialize_ppo_adapter_if_ready(self) -> None:
@@ -7688,6 +8260,12 @@ class StrategyCoordinator:
         if self.ppo_adapter or self._ppo_adapter_failed:
             return
         rl_cfg = getattr(self, '_rl_config', {}) or {}
+        ppo_mode = (self._ml_governance_modes or {}).get("ppo_mode", "apply")
+        if ppo_mode == "disabled":
+            if not getattr(self, '_ppo_disabled_logged', False):
+                logger.info("ℹ️ [PPO] Adapter disabled by governance mode (ml.governance.ppo_mode=disabled).")
+                self._ppo_disabled_logged = True
+            return
         if not rl_cfg.get('ppo_enabled'):
             # Only log once to avoid spam
             if not getattr(self, '_ppo_disabled_logged', False):
@@ -7707,7 +8285,11 @@ class StrategyCoordinator:
                 market_data_pipeline=self.market_data_pipeline,
                 feature_pipeline=self.feature_pipeline,
             )
-            logger.info(f"✅ [PPO] Adapter initialized successfully. Symbols: {rl_cfg.get('ppo_symbols')}")
+            logger.info(
+                "✅ [PPO] Adapter initialized successfully. mode=%s symbols=%s",
+                ppo_mode,
+                rl_cfg.get('ppo_symbols'),
+            )
         except Exception as exc:  # pragma: no cover - adapter init safety
             self._ppo_adapter_failed = True
             logger.error(
@@ -8038,9 +8620,16 @@ class StrategyCoordinator:
         """Apply PPO-based soft gating for BTC/USDT long signals."""
         side = (signal.get('side') or '').lower()
         requested_symbol = signal.get('symbol')
+        ppo_mode = self._get_ppo_governance_mode()
+        decision_effective = self._is_ppo_decision_effective()
         
         # Log PPO check attempt
-        logger.debug(f"🔍 [PPO-CHECK] Checking PPO for {requested_symbol} ({side})")
+        logger.debug(
+            "🔍 [PPO-CHECK] Checking PPO for %s (%s) | mode=%s",
+            requested_symbol,
+            side,
+            ppo_mode,
+        )
 
         if side not in ('buy', 'long'):
             logger.debug(f"ℹ️ [PPO-SKIP] Signal is {side}, PPO only filters LONGs.")
@@ -8056,7 +8645,14 @@ class StrategyCoordinator:
 
         score: float
         metadata: Dict[str, Any]
-        if adapter:
+        if ppo_mode == "disabled":
+            score = self.ppo_fallback_score
+            metadata = {
+                'reason': 'disabled',
+                'governance_reason_code': self._get_ppo_governance_reason_code(),
+            }
+            logger.debug("ℹ️ [PPO-SKIP] Governance disabled; using neutral score.")
+        elif adapter:
             try:
                 score, metadata = await adapter.get_long_score(
                     normalized_symbol,
@@ -8085,9 +8681,18 @@ class StrategyCoordinator:
         metadata.setdefault('symbol', normalized_symbol)
         metadata.setdefault('normalized_symbol', normalized_symbol)
         metadata.setdefault('requested_symbol', requested_symbol)
+        metadata['governance_mode'] = ppo_mode
+        metadata['decision_effective'] = decision_effective
+        if not decision_effective:
+            metadata.setdefault(
+                'governance_reason_code',
+                self._get_ppo_governance_reason_code("decision_neutralized"),
+            )
 
         signal['ppo_long_score'] = score
         signal['ppo_meta'] = metadata
+        signal['ppo_governance_mode'] = ppo_mode
+        signal['ppo_decision_effective'] = decision_effective
         lookback_meta = metadata.get('lookback') if isinstance(metadata, dict) else None
         if lookback_meta:
             signal['ppo_lookback_meta'] = lookback_meta
@@ -8104,18 +8709,33 @@ class StrategyCoordinator:
                 metadata.get('confidence', 0.0)
             )
 
-        self._record_ppo_telemetry(score)
-        signal['rl_recommendation'] = action_label.lower()
+        if ppo_mode != "disabled":
+            self._record_ppo_telemetry(score)
+
+        if decision_effective:
+            signal['rl_recommendation'] = action_label.lower()
+        else:
+            signal['ppo_shadow_action'] = action_label.lower()
+            signal['ppo_shadow_score'] = score
+            logger.info(
+                "👻 [PPO-SHADOW] %s | action=%s | raw_score=%.4f | reason_code=%s",
+                requested_symbol,
+                action_label,
+                score,
+                metadata.get('governance_reason_code') or self._get_ppo_governance_reason_code("decision_neutralized"),
+            )
+
         base_meta = signal.get('rl_decision_meta')
         if not isinstance(base_meta, dict):
             base_meta = {}
         signal['rl_decision_meta'] = {**base_meta, 'ppo': metadata}
-        self._last_rl_decision = {
-            'action': action_label,
-            'confidence': score,
-            'timestamp': datetime.utcnow().isoformat(),
-            'source': 'ppo'
-        }
+        if decision_effective:
+            self._last_rl_decision = {
+                'action': action_label,
+                'confidence': score,
+                'timestamp': datetime.utcnow().isoformat(),
+                'source': 'ppo'
+            }
 
     async def monitor_ppo_state(self, symbol: str) -> None:
         """
@@ -8128,6 +8748,8 @@ class StrategyCoordinator:
         # 1. Check if PPO is enabled in config
         rl_cfg = getattr(self, '_rl_config', {}) or {}
         if not rl_cfg.get('ppo_enabled'):
+            return
+        if self._get_ppo_governance_mode() == "disabled":
             return
 
         # 2. Initialize adapter if needed
@@ -8343,6 +8965,9 @@ class StrategyCoordinator:
     def _compute_ppo_position_multiplier(self, signal: Dict[str, Any]) -> float:
         side = (signal.get('side') or '').lower()
         if side not in ('buy', 'long'):
+            return 1.0
+        if not self._is_ppo_decision_effective():
+            signal['ppo_position_reason_code'] = self._get_ppo_governance_reason_code("size_neutralized")
             return 1.0
         score = float(signal.get('ppo_long_score', self.ppo_fallback_score))
         base = self.ppo_multipliers['position_base']
@@ -9199,6 +9824,12 @@ class StrategyCoordinator:
             ml_context = None
             if hasattr(self, 'ml_integration') and self.ml_integration and needs_ml_context:
                 ml_context = await self.ml_integration.get_ml_context(symbol)
+                if isinstance(ml_context, dict):
+                    signal["ml_context_available"] = True
+                    signal["ml_context_is_healthy"] = bool(ml_context.get("is_healthy", True))
+                    signal["ml_context_reason"] = ml_context.get("reason")
+            if not isinstance(ml_context, dict):
+                signal.setdefault("ml_context_available", False)
 
             if signal.get('ml_confidence') is None:
                 if ml_context:
@@ -9275,6 +9906,9 @@ class StrategyCoordinator:
             signal.update({'ml_confidence': 0.5, 'regime_name': 'neutral', 'regime_confidence': 0.3})
             signal.setdefault('regime_weight', self._derive_regime_weight_from_confidence(signal['regime_confidence']))
             signal['regime_context_source'] = 'fallback'
+            signal['ml_context_available'] = False
+            signal['ml_context_is_healthy'] = False
+            signal['ml_context_reason'] = str(e)
             signal['ml_quality_score'] = signal.get('ml_quality_score', 0.0)
             if 'quality_score' not in signal:
                 signal['quality_score'] = 0.0
@@ -9283,11 +9917,22 @@ class StrategyCoordinator:
         try:
             side = (signal.get('side') or '').lower()
             legacy_rl_runtime_enabled = self._is_legacy_rl_runtime_enabled()
+            ppo_mode = self._get_ppo_governance_mode()
             if side in ('buy', 'long') and 'ppo_long_score' in signal:
                 score = float(signal.get('ppo_long_score', self.ppo_fallback_score))
-                signal['rl_is_agree'] = score >= 0.5
-                signal['rl_action_prob'] = score
-                logger.debug(f"✅ PPO metrics: long_score={score:.2f}")
+                if ppo_mode == "apply":
+                    signal['rl_is_agree'] = score >= 0.5
+                    signal['rl_action_prob'] = score
+                    logger.debug(f"✅ PPO metrics: long_score={score:.2f}")
+                else:
+                    signal['rl_is_agree'] = False
+                    signal['rl_action_prob'] = 0.5
+                    signal['ppo_rl_reason_code'] = self._get_ppo_governance_reason_code("rl_neutralized")
+                    logger.debug(
+                        "👻 [PPO-SHADOW] RL metrics neutralized for %s (mode=%s)",
+                        symbol,
+                        ppo_mode,
+                    )
             elif legacy_rl_runtime_enabled and hasattr(self, '_last_rl_decision') and self._last_rl_decision:
                 rl_action = self._last_rl_decision.get('action', 'hold')
                 rl_confidence = float(self._last_rl_decision.get('confidence', 0.5))
@@ -9419,14 +10064,26 @@ class StrategyCoordinator:
         # 4. PPO Multipliers for downstream risk modules
         side = (signal.get('side') or '').lower()
         ppo_rr_multiplier = 1.0
+        ppo_mode = self._get_ppo_governance_mode()
         if side in ('buy', 'long') and 'ppo_long_score' in signal:
             score = float(signal['ppo_long_score'])
             ppo_meta = signal.get('ppo_meta') if isinstance(signal.get('ppo_meta'), dict) else {}
             ppo_reason = str(ppo_meta.get('reason', '') or '').strip().lower()
             guard_active = bool(ppo_meta.get('guard_active', False))
-
-            if guard_active or self._is_ppo_rr_reason_inactive(ppo_reason):
+            if ppo_mode != "apply":
                 ppo_rr_multiplier = 1.0
+                signal['ppo_rr_reason_code'] = self._get_ppo_governance_reason_code("rr_neutralized")
+                if isinstance(ppo_meta, dict):
+                    ppo_meta.setdefault('governance_mode', ppo_mode)
+                    ppo_meta.setdefault('decision_effective', False)
+                    ppo_meta.setdefault(
+                        'governance_reason_code',
+                        self._get_ppo_governance_reason_code("decision_neutralized"),
+                    )
+                    signal['ppo_meta'] = ppo_meta
+            elif guard_active or self._is_ppo_rr_reason_inactive(ppo_reason):
+                ppo_rr_multiplier = 1.0
+                signal['ppo_rr_reason_code'] = "ppo.rr.inactive_reason"
                 logger.debug(
                     "⚠️ [PPO-RR] Skipping RR multiplier for %s due to inactive PPO reason=%s guard=%s",
                     symbol,
@@ -9437,6 +10094,7 @@ class StrategyCoordinator:
                 ppo_rr_multiplier = (
                     self.ppo_multipliers['rr_up_mult'] if score < 0.5 else self.ppo_multipliers['rr_down_mult']
                 )
+                signal['ppo_rr_reason_code'] = "ppo.rr.active"
         signal['ppo_rr_multiplier'] = ppo_rr_multiplier
 
         signal = self._apply_regime_route_hint(signal)
@@ -9498,9 +10156,13 @@ class StrategyCoordinator:
                 portfolio_manager=getattr(self, "portfolio_manager", None),
             )
 
+            sized_signal.setdefault('sizing_meta', {})
+            sized_signal['sizing_meta']['ppo_position_multiplier'] = position_multiplier
+            ppo_position_reason_code = signal.get('ppo_position_reason_code')
+            if ppo_position_reason_code:
+                sized_signal['sizing_meta']['ppo_position_reason_code'] = ppo_position_reason_code
+
             if position_multiplier != 1.0:
-                sized_signal.setdefault('sizing_meta', {})
-                sized_signal['sizing_meta']['ppo_position_multiplier'] = position_multiplier
                 if 'amount' in sized_signal:
                     sized_signal['amount'] *= position_multiplier
                 if 'notional' in sized_signal:
@@ -9548,6 +10210,8 @@ class StrategyCoordinator:
             risk_metrics['planner_reason'] = meta.get('planner_reason')
             risk_metrics['sizing_meta'] = sized_signal.get('sizing_meta', {})
             risk_metrics['sizing_meta']['ppo_position_multiplier'] = position_multiplier
+            if ppo_position_reason_code:
+                risk_metrics['sizing_meta']['ppo_position_reason_code'] = ppo_position_reason_code
 
             # Final execution size fields (canonical when planner is active)
             risk_metrics['final_position_size'] = final_size

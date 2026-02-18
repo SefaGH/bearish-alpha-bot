@@ -250,7 +250,7 @@ class RiskManager:
 
         if risk_matrix:
             from core.risk_rules import VolumeAwarePositionSizingRule
-            rules.append(VolumeAwarePositionSizingRule(risk_matrix))
+            rules.append(VolumeAwarePositionSizingRule(risk_matrix, risk_config=self.risk_config))
 
         rules.append(
             StrategyPerformanceRule(
@@ -1253,9 +1253,20 @@ class RiskManager:
                 
                 if not is_valid:
                     rule_name = getattr(rule, "rule_name", None) or rule.__class__.__name__
+                    rule_reason_code = f"risk.rule.{rule_name}"
                     if isinstance(risk_metrics, dict):
+                        if str(rule_name) == "RiskRewardRatioRule":
+                            prefill_reason_code = signal.get("prefill_rr_reason_code")
+                            if prefill_reason_code:
+                                rule_reason_code = str(prefill_reason_code)
+                            prefill_meta = signal.get("prefill_rr_meta")
+                            if isinstance(prefill_meta, dict):
+                                risk_metrics["rr_gate_prefill"] = dict(prefill_meta)
+                            prefill_reason = signal.get("prefill_rr_reason")
+                            if prefill_reason:
+                                risk_metrics["rr_reason_code"] = str(prefill_reason)
                         risk_metrics["rejected_by_rule"] = str(rule_name)
-                        risk_metrics["reason_code"] = f"risk.rule.{rule_name}"
+                        risk_metrics["reason_code"] = rule_reason_code
                         risk_metrics["blocked_by"] = f"RiskRule.{rule_name}"
                     if planner_mode == 'active' and getattr(rule, 'rule_name', '') == 'PositionSizeRule':
                         pos_value = signal.get('__position_size_rule_position_value')
