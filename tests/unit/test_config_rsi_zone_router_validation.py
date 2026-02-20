@@ -30,6 +30,15 @@ def _base_config() -> dict:
                         "high_side_enabled": False,
                         "min_penetration": 1.0,
                     },
+                    "shock_override": {
+                        "enabled": True,
+                        "mode": "observe",
+                        "canary_symbols": ["*"],
+                        "allow_strategies": ["adaptive_str", "short_the_rip"],
+                        "state": "ARMED",
+                        "min_score": 0.60,
+                        "min_adx": 25.0,
+                    },
                 },
             }
         },
@@ -109,3 +118,48 @@ def test_rsi_zone_router_validation_rejects_non_string_mr_mode():
     with pytest.raises(ConfigSafetyError) as exc:
         validate_config_safety(cfg)
     assert "strategies.rsi_zone_router.source.mr_mode" in str(exc.value)
+
+
+def test_rsi_zone_router_validation_rejects_non_mapping_shock_override_block():
+    cfg = _base_config()
+    cfg["strategies"]["rsi_zone_router"]["transition"]["shock_override"] = "enabled"
+
+    with pytest.raises(ConfigSafetyError) as exc:
+        validate_config_safety(cfg)
+    assert "strategies.rsi_zone_router.transition.shock_override" in str(exc.value)
+
+
+def test_rsi_zone_router_validation_rejects_invalid_shock_override_mode():
+    cfg = _base_config()
+    cfg["strategies"]["rsi_zone_router"]["transition"]["shock_override"]["mode"] = "aggressive"
+
+    with pytest.raises(ConfigSafetyError) as exc:
+        validate_config_safety(cfg)
+    assert "strategies.rsi_zone_router.transition.shock_override.mode" in str(exc.value)
+
+
+def test_rsi_zone_router_validation_rejects_invalid_shock_override_canary_symbols():
+    cfg = _base_config()
+    cfg["strategies"]["rsi_zone_router"]["transition"]["shock_override"]["canary_symbols"] = ["BTC/USDT:USDT", "BAD TOKEN"]
+
+    with pytest.raises(ConfigSafetyError) as exc:
+        validate_config_safety(cfg)
+    assert "strategies.rsi_zone_router.transition.shock_override.canary_symbols" in str(exc.value)
+
+
+def test_rsi_zone_router_validation_rejects_out_of_range_shock_override_min_score():
+    cfg = _base_config()
+    cfg["strategies"]["rsi_zone_router"]["transition"]["shock_override"]["min_score"] = 1.2
+
+    with pytest.raises(ConfigSafetyError) as exc:
+        validate_config_safety(cfg)
+    assert "strategies.rsi_zone_router.transition.shock_override.min_score" in str(exc.value)
+
+
+def test_rsi_zone_router_validation_rejects_negative_shock_override_min_adx():
+    cfg = _base_config()
+    cfg["strategies"]["rsi_zone_router"]["transition"]["shock_override"]["min_adx"] = -1
+
+    with pytest.raises(ConfigSafetyError) as exc:
+        validate_config_safety(cfg)
+    assert "strategies.rsi_zone_router.transition.shock_override.min_adx" in str(exc.value)

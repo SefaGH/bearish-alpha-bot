@@ -17,6 +17,7 @@ from .short_the_rip import ShortTheRip
 from .adaptive_ob import AdaptiveOversoldBounce
 from .adaptive_str import AdaptiveShortTheRip
 from .mean_reversion import VWAPMeanReversion
+from .shock_breakdown_short import ShockBreakdownShortStrategy
 
 # ✅ EXPORT LİSTESİ EKLE
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     'AdaptiveOversoldBounce',
     'AdaptiveShortTheRip',
     'VWAPMeanReversion',
+    'ShockBreakdownShortStrategy',
     'DEFAULT_MARKET_REGIME'
 ]

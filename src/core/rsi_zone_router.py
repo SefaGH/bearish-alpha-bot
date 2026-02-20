@@ -504,6 +504,101 @@ def _resolve_mr_mode(cfg: Dict[str, Any]) -> str:
     return "slow_only"
 
 
+def _normalize_token(value: Any) -> str:
+    try:
+        return str(value or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _extract_string_tokens(raw: Any) -> set[str]:
+    if raw is None:
+        return set()
+    items: list[str] = []
+    if isinstance(raw, str):
+        items = [part.strip() for part in str(raw).split(",")]
+    elif isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            try:
+                text = str(item).strip()
+            except Exception:
+                text = ""
+            items.append(text)
+    out = {_normalize_token(item) for item in items if _normalize_token(item)}
+    return out
+
+
+def _resolve_shock_override_mode(snapshot: Any, cfg: Dict[str, Any]) -> str:
+    transition_cfg = cfg.get("transition", {}) if isinstance(cfg.get("transition"), dict) else {}
+    shock_cfg = transition_cfg.get("shock_override", {}) if isinstance(transition_cfg.get("shock_override"), dict) else {}
+    if not bool(shock_cfg.get("enabled", False)):
+        return "off"
+
+    raw_mode = _normalize_token(shock_cfg.get("mode", "enforce"))
+    if raw_mode in {"off", "disabled"}:
+        return "off"
+    mode = raw_mode if raw_mode in {"observe", "enforce"} else "enforce"
+
+    canary_tokens = _extract_string_tokens(shock_cfg.get("canary_symbols"))
+    if not canary_tokens or "*" in canary_tokens:
+        return mode
+
+    payload = _snapshot_payload(snapshot)
+    symbol_norm = _normalize_token(payload.get("symbol"))
+    if symbol_norm and symbol_norm in canary_tokens:
+        return mode
+    return "off"
+
+
+def _is_transition_shock_override_match(
+    *,
+    normalized_strategy: str,
+    snapshot: Any,
+    cfg: Dict[str, Any],
+) -> Tuple[str, bool]:
+    mode = _resolve_shock_override_mode(snapshot, cfg)
+    if mode == "off":
+        return "off", False
+
+    transition_zone_values = {RsiZone.TRANSITION_LOW.value, RsiZone.TRANSITION_HIGH.value}
+    zone = _extract_zone(snapshot)
+    if zone not in transition_zone_values:
+        return mode, False
+
+    transition_cfg = cfg.get("transition", {}) if isinstance(cfg.get("transition"), dict) else {}
+    shock_cfg = transition_cfg.get("shock_override", {}) if isinstance(transition_cfg.get("shock_override"), dict) else {}
+
+    allowed_strategies = _extract_string_tokens(shock_cfg.get("allow_strategies"))
+    if not allowed_strategies:
+        allowed_strategies = {"adaptive_str", "short_the_rip", "adaptive_short_the_rip"}
+    if normalized_strategy not in allowed_strategies:
+        return mode, False
+
+    payload = _snapshot_payload(snapshot)
+
+    state_required = _normalize_token(shock_cfg.get("state", "ARMED")).upper()
+    if state_required not in {"", "ANY", "*"}:
+        shock_state = _normalize_token(payload.get("shock_state")).upper()
+        if shock_state != state_required:
+            return mode, False
+
+    min_score = _coerce_finite_float(shock_cfg.get("min_score", 0.60))
+    if min_score is not None:
+        shock_score = _extract_snapshot_float(snapshot, "shock_score")
+        if shock_score is None or float(shock_score) < float(min_score):
+            return mode, False
+
+    min_adx = _coerce_finite_float(shock_cfg.get("min_adx"))
+    if min_adx is not None and float(min_adx) > 0:
+        adx_val = _extract_snapshot_float(snapshot, "regime_adx")
+        if adx_val is None:
+            adx_val = _extract_snapshot_float(snapshot, "adx")
+        if adx_val is None or float(adx_val) < float(min_adx):
+            return mode, False
+
+    return mode, True
+
+
 def is_strategy_allowed(
     strategy_name: Any,
     side: Any,
@@ -520,13 +615,28 @@ def is_strategy_allowed(
     ob_names = {"adaptive_ob", "oversold_bounce"}
     str_names = {"adaptive_str", "short_the_rip", "adaptive_short_the_rip"}
     mr_names = {"mean_reversion", "mr"}
+    transition_exempt_names = {"shock_breakdown_short", "sbs"}
 
     zone = _extract_zone(snapshot)
     if not zone:
         return True, "rsi_router.snapshot_missing"
 
+    shock_mode, shock_match = _is_transition_shock_override_match(
+        normalized_strategy=normalized,
+        snapshot=snapshot,
+        cfg=cfg,
+    )
+    if shock_mode == "enforce" and shock_match:
+        return True, "rsi_router.transition_shock_override"
+    observe_would_override_transition = bool(shock_mode == "observe" and shock_match)
+
     transition_cfg = cfg.get("transition", {}) if isinstance(cfg.get("transition"), dict) else {}
     no_trade_new_entry = bool(transition_cfg.get("no_trade_new_entry", True))
+
+    if normalized in transition_exempt_names:
+        if no_trade_new_entry and zone in {RsiZone.TRANSITION_LOW.value, RsiZone.TRANSITION_HIGH.value}:
+            return True, "rsi_router.transition_exempt_strategy"
+        return True, "rsi_router.specialized_strategy_allow"
 
     # MR should operate strictly between adaptive OB/STR levels.
     if normalized in mr_names:
@@ -550,21 +660,29 @@ def is_strategy_allowed(
             if slow_zone:
                 effective_zone = slow_zone
         if no_trade_new_entry and effective_zone in {RsiZone.TRANSITION_LOW.value, RsiZone.TRANSITION_HIGH.value}:
+            if observe_would_override_transition:
+                return False, "rsi_router.observe_would_override_transition"
             return False, "rsi_router.transition_no_trade"
         if effective_zone != RsiZone.MR.value:
             return False, "rsi_router.zone_mismatch"
         return True, "rsi_router.allowed"
 
     if no_trade_new_entry and zone in {RsiZone.TRANSITION_LOW.value, RsiZone.TRANSITION_HIGH.value}:
+        if observe_would_override_transition:
+            return False, "rsi_router.observe_would_override_transition"
         return False, "rsi_router.transition_no_trade"
 
     if normalized in ob_names:
         if zone != RsiZone.OVERSOLD.value:
+            if observe_would_override_transition and zone in {RsiZone.TRANSITION_LOW.value, RsiZone.TRANSITION_HIGH.value}:
+                return False, "rsi_router.observe_would_override_transition"
             return False, "rsi_router.zone_mismatch"
         return True, "rsi_router.allowed"
 
     if normalized in str_names:
         if zone != RsiZone.OVERBOUGHT.value:
+            if observe_would_override_transition and zone in {RsiZone.TRANSITION_LOW.value, RsiZone.TRANSITION_HIGH.value}:
+                return False, "rsi_router.observe_would_override_transition"
             return False, "rsi_router.zone_mismatch"
         return True, "rsi_router.allowed"
 

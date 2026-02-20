@@ -572,7 +572,7 @@ ml:
 | Başlık | Beklenen (Paket-9) | Mevcut Durum | Sonuç |
 |---|---|---|---|
 | GEMMA shadow anahtarı | Kararı etkilemeden shadow log | `ml.governance.gemma_mode=apply|shadow|disabled` eklendi; legacy `ml.gemma.shadow_mode` fallback’i korunuyor (`config/config.example.yaml`, `src/core/production_coordinator.py`, `src/core/strategy_coordinator.py`) | **Var** |
-| GEMMA shadow aktiflik (run bazlı) | Shadow açık | İncelenen run’da `Shadow Mode: False` (`logs/live_trading_20260217_182419_464545.log:251`, `logs/live_trading_20260217_182419_464545.log:461`) | **Kapalı** |
+| GEMMA shadow aktiflik (run bazlı) | Shadow açık | Yeni run’da da `Shadow Mode: False` (`logs/live_trading_20260218_222216_783819.log:255`, `logs/live_trading_20260218_222216_783819.log:468`) | **Kapalı** |
 | PPO shadow anahtarı | PPO için explicit shadow/apply ayrımı | `ml.governance.ppo_mode=apply|shadow|disabled` eklendi; runtime’da `_rl_config.ppo_mode` üzerinden normalize ediliyor (`config/config.example.yaml`, `src/core/production_coordinator.py`, `src/core/strategy_coordinator.py`) | **Var** |
 | PPO shadow telemetry | Sadece izleme amaçlı inference | `monitor_ppo_state` mevcut ve telemetry üretiyor (`src/core/strategy_coordinator.py:8574`) | **Var** |
 | PPO karar etkisi | Shadow’da karar etkisi olmamalı | `_apply_ppo_long_filter` shadow modda `decision_effective=false` işaretliyor, `rl_recommendation`/`_last_rl_decision` override etmiyor; yalnızca telemetry (`ppo_shadow_action`, `ppo_shadow_score`) üretiyor (`src/core/strategy_coordinator.py`) | **Nötralize Edildi** |
@@ -582,7 +582,7 @@ ml:
 | Retrain karar otomasyonu | Canlı metrik eşiğine bağlı faz geçişi | `ProductionCoordinator` RL telemetry döngüsünde `ml_governance_snapshot`/`ml_governance_transition` ile PPO için window-bazlı auto degrade/recover (apply↔shadow/disabled) aktif; eşikler `ml.governance.automation.ppo.*` ile yönetiliyor | **Var (PPO Faz Otomasyonu)** |
 | Otomatik model eğitimi | Eşik sonrası modeli yeniden eğitme | Runtime tarafında auto-train tetiklenmiyor; otomasyon fazı `mode` yönetiyor, retrain adımı offline araçlarla operatör kontrollü | **Yok (Bilinçli Tasarım)** |
 | Retrain için offline araçlar | Tanı/eval araçları hazır olmalı | PPO için denetim/sweep scriptleri mevcut (`src/tools/ppo_observation_parity_check.py`, `src/tools/ppo_reward_audit.py`, `src/tools/ppo_threshold_sweep.py`) | **Var** |
-| Canlı log kanıtı (aynı run) | Shadow’da işlem parametresi değişmemeli | `2026-02-18` itibarıyla `logs/` altında post-change yeni run yok; en güncel dosya yine `logs/live_trading_20260217_182419_464545.log` ve bu run’da `PPO_RR=1.30` / `PPO=0.50` görülüyor (`logs/live_trading_20260217_182419_464545.log:11654`, `logs/live_trading_20260217_182419_464545.log:11688`). Yeni kodun canlı kanıtı olan `ppo_rr_reason_code=ml.governance.ppo.shadow.rr_neutralized`, `ppo_position_reason_code=ml.governance.ppo.shadow.size_neutralized`, `event=ml_governance_snapshot` satırları bu dosyada henüz yok. | **Açık (yeni canlı run gerekli)** |
+| Canlı log kanıtı (yeni run) | Shadow’da işlem parametresi değişmemeli | Yeni run `logs/live_trading_20260218_222216_783819.log` incelendi. `canary_metrics_snapshot`/`alert_status` mevcut (`:678`, `:7800`) fakat `ml_governance_snapshot`/`ml_governance_transition` satırı yok ve `ppo_rr_reason_code=ml.governance.ppo.shadow.rr_neutralized` + `ppo_position_reason_code=ml.governance.ppo.shadow.size_neutralized` bulunamadı. Run başlangıcında mod `PPO=apply` (`:32`, `:206`, `:257`). | **Açık (kriter-1/2 karşılanmadı)** |
 
 **Net tespit:** Paket-9’un governance hedefi kod seviyesinde tamamlandı: `apply|shadow|disabled` mode yönetimi + shadow’da karar etkisinin sıfırlanması + PPO telemetry’ye dayalı otomatik faz geçişi aktif. Bu tasarımda otomatik model yeniden eğitim (train job tetikleme) bilinçli olarak runtime dışında tutulmuştur.
 
@@ -618,9 +618,19 @@ ml:
 
 ### 11.4 Açık Kalem İncelemesi (Canlı Doğrulama)
 
-- İncelenen log setinde (`logs/`) post-change yeni bir `live_trading_*.log` bulunmadı; en güncel run `logs/live_trading_20260217_182419_464545.log`.
-- Bu run içinde eski etki kanıtı mevcut: `PPO_RR=1.30` ve `PPO=0.50` (`logs/live_trading_20260217_182419_464545.log:11654`, `logs/live_trading_20260217_182419_464545.log:11688`).
-- Aynı run içinde yeni governance kanıt event/reason-code satırları bulunmuyor: `event=ml_governance_snapshot`, `event=ml_governance_transition`, `ppo_rr_reason_code=ml.governance.ppo.shadow.rr_neutralized`, `ppo_position_reason_code=ml.governance.ppo.shadow.size_neutralized`.
+- Yeni run doğrulandı: `logs/live_trading_20260218_222216_783819.log` (başlangıç: `2026-02-18 22:22:16`, kapanış: `2026-02-19 06:22:35`).
+- Kriter-3 (canary) **sağlandı**:
+  - `event=canary_metrics_snapshot` + `alert_status` mevcut (`:678`, `:7800`).
+  - Bu run’da `same_signal_repeat_rate` için `critical` alarm da üretildi (`:7800`, `:7801`).
+- Kriter-1 (governance snapshot) **sağlanmadı**:
+  - `ml_governance_snapshot` ve `ml_governance_transition` için log içinde eşleşme yok.
+  - Run’da RL tarafı sürekli `RL inactive` kaldığı için otomasyon döngüsü snapshot loguna ulaşmıyor (`logs/live_trading_20260218_222216_783819.log:880`, `logs/live_trading_20260218_222216_783819.log:1007`, `logs/live_trading_20260218_222216_783819.log:30237`).
+  - Kod nedeni: `src/core/production_coordinator.py:6454-6462` bloğunda `if not samples and ppo_samples: ... continue` nedeniyle `6490` satırındaki `ml_governance_snapshot` logu atlanıyor.
+- Kriter-2 (PPO shadow nötralizasyon reason-code) **sağlanmadı**:
+  - `ppo_rr_reason_code=ml.governance.ppo.shadow.rr_neutralized` ve `ppo_position_reason_code=ml.governance.ppo.shadow.size_neutralized` eşleşmesi yok.
+  - Aynı run başlangıcında governance modu `PPO=apply` (`logs/live_trading_20260218_222216_783819.log:32`, `:206`, `:257`); shadow reason-code kanıtı bu modda beklenmez.
+- Grafik/log uyumu (5m pencere):
+  - Ekran görüntüsündeki yükseliş eğilimli akışta bot ağırlıkla `near_miss`, `quality_gate` ve `volume.low_vol_tight_stop(_far)` nedenleriyle girişe dönmedi; run sonunda `entries_total=0`, `Active Positions: 0` (`logs/live_trading_20260218_222216_783819.log:7800`, `logs/live_trading_20260218_222216_783819.log:33042`, `logs/live_trading_20260218_222216_783819.log:33045`).
 - Kapanış kriteri:
   1. Yeni canlı run logunda `ml_governance_snapshot` (ve mümkünse `ml_governance_transition`) görülmeli.
   2. En az bir MR sinyalinde PPO etkisinin nötrlendiği reason-code satırları görülmeli.

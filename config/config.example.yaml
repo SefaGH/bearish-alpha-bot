@@ -517,7 +517,7 @@ signals:
   duplicate_prevention:
     min_price_change_pct: 0.0005      # Override with: DUPLICATE_PREVENTION_THRESHOLD
     cooldown_seconds: 20              # Override with: DUPLICATE_PREVENTION_COOLDOWN
-    same_signal_cooldown_seconds: 600 # Optional: blocks repeated (symbol+tf+side+signal_px bucket) even after base cooldown
+    same_signal_cooldown_seconds: 120 # Optional: blocks repeated (symbol+tf+side+signal_px bucket) even after base cooldown
     same_signal_tick_size: 0.1        # Optional: tick-rounding bucket size for same-signal detection
     same_signal_price_tolerance_bps: 0.0  # Optional: alternative bucket size component (abs(px)*bps/10000)
     same_signal_price_tolerance_pct: 0.0  # Optional: alternative bucket size component (abs(px)*pct)
@@ -955,6 +955,18 @@ strategies:
         low_side_enabled: true        # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__LOW_SIDE_ENABLED
         high_side_enabled: false      # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__HIGH_SIDE_ENABLED
         min_penetration: 0.0          # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__MISMATCH_EXTREME_OVERRIDE__MIN_PENETRATION
+      shock_override:
+        enabled: false                # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__SHOCK_OVERRIDE__ENABLED
+        mode: "observe"               # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__SHOCK_OVERRIDE__MODE ; enforce | observe | off
+        canary_symbols:
+          - "*"                       # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__SHOCK_OVERRIDE__CANARY_SYMBOLS
+        allow_strategies:
+          - "adaptive_str"            # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__SHOCK_OVERRIDE__ALLOW_STRATEGIES
+          - "short_the_rip"
+          - "adaptive_short_the_rip"
+        state: "ARMED"                # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__SHOCK_OVERRIDE__STATE ; ANY = state ignore
+        min_score: 0.60               # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__SHOCK_OVERRIDE__MIN_SCORE
+        min_adx: 25.0                 # Override with: STRATEGIES__RSI_ZONE_ROUTER__TRANSITION__SHOCK_OVERRIDE__MIN_ADX
     soft_deferral:
       cancel_on_zone_mismatch: true   # Override with: STRATEGIES__RSI_ZONE_ROUTER__SOFT_DEFERRAL__CANCEL_ON_ZONE_MISMATCH
     telemetry:
@@ -994,7 +1006,7 @@ strategies:
       min_volume_mult: 1.5            # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__BREAKOUT__MIN_VOLUME_MULT
       use_trend_guard_confirmation: true  # Reserved toggle for future refinement
     rollout:
-      mode: "observe"                 # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ROLLOUT__MODE ; enforce | observe | off
+      mode: "enforce"                 # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ROLLOUT__MODE ; enforce | observe | off
       canary_symbols:
         - "BTC/USDT:USDT"             # Override with: STRATEGIES__LEVEL_ZONE_ROUTER__ROLLOUT__CANARY_SYMBOLS ; "*" = all symbols
     soft_deferral:
@@ -1082,6 +1094,28 @@ strategies:
       volume_5m_mult: 3.0
       volume_5m_window: 20
 
+  shock_breakdown_short:
+    enabled: true
+    execution_profile: "sniper_mode"   # Single-shot continuation short path (no DCA/pyramiding by profile)
+    timeframe: "5m"                    # Decision timeframe (uses market_data[timeframe] when available)
+    shock_state: "ARMED"               # Required shock state (or use shock_states list/CSV)
+    min_shock_score: 0.60
+    breakdown_lookback_bars: 20        # Support reference window (previous lows)
+    breakdown_confirm_bps: 5.0         # Breakdown confirmation margin below support
+    momentum_lookback_bars: 3
+    min_momentum_pct: 0.003            # 0.3% downside momentum
+    volume_ma_window: 20
+    min_volume_mult: 1.20              # Current volume / rolling mean volume
+    cooldown_seconds: 600
+    take_profit_pct: 0.010             # Tight TP for shock continuation scalp
+    stop_loss_pct: 0.006               # Tight SL for fast invalidation
+    rollout:
+      mode: "observe"                  # observe | enforce | off
+      canary_symbols:
+        - "BTC/USDT:USDT"
+    exit_settings:
+      max_hold_seconds: 900
+
   mean_reversion:
     enabled: true
     execution_profile: "sniper_mode"  # Hybrid: NO DCA/NO pyramiding (sniper MR)
@@ -1157,7 +1191,7 @@ strategies:
         extreme_z_min: 2.5           # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__TREND_UP__EXTREME_Z_MIN ; used when short_mode=extreme_only
       shock:
         long_mode: "disabled"
-        short_mode: "disabled"       # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__SHOCK__SHORT_MODE ; off | disabled ; Phase-1 default: short-side shock veto enabled
+        short_mode: "off"            # Override with: STRATEGIES__MEAN_REVERSION__REGIME_POLICY__SHOCK__SHORT_MODE ; off | disabled ; "disabled" enforces shock short veto
         state: "ARMED"
         min_score: 0.60
     vsa_shadow:
@@ -1173,7 +1207,8 @@ strategies:
         enabled: true
         clear_on_band_breach: true
         clear_on_z_threshold: 2.0
-    high_adx_z_threshold: 1.90
+    high_adx_z_threshold: 1.60        # Override with: STRATEGIES__MEAN_REVERSION__HIGH_ADX_Z_THRESHOLD
+    high_adx_z_threshold_floor: 1.60  # Override with: STRATEGIES__MEAN_REVERSION__HIGH_ADX_Z_THRESHOLD_FLOOR ; safety floor applied to high_adx_z_threshold
     adx_slope_lookback: 5
     adx_slope_eps: 0.2
     net_profit_filter:

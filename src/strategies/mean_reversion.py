@@ -194,8 +194,14 @@ class VWAPMeanReversion(BaseStrategy):
             self._high_adx_z_threshold = 2.0
         if not math.isfinite(self._high_adx_z_threshold) or self._high_adx_z_threshold <= 0:
             self._high_adx_z_threshold = 2.0
+        try:
+            self._high_adx_z_threshold_floor = float(cfg.get("high_adx_z_threshold_floor", 1.60) or 1.60)
+        except Exception:
+            self._high_adx_z_threshold_floor = 1.60
+        if not math.isfinite(self._high_adx_z_threshold_floor) or self._high_adx_z_threshold_floor <= 0:
+            self._high_adx_z_threshold_floor = 1.60
         # Safety: preserve intent that higher ADX requires stricter Z.
-        self._high_adx_z_threshold = max(1.60, float(self._high_adx_z_threshold))
+        self._high_adx_z_threshold = max(float(self._high_adx_z_threshold_floor), float(self._high_adx_z_threshold))
         self.min_rr_ratio = float(cfg.get("min_rr_ratio", 1.0))
 
         net_profit_cfg = cfg.get("net_profit_filter", {})
@@ -1658,6 +1664,15 @@ class VWAPMeanReversion(BaseStrategy):
             "volume_bucket": None,
             "shock_state": None,
         }
+        gate_telemetry: Dict[str, Any] = {
+            "dynamic_z_abs": None,
+            "dynamic_z_required": None,
+            "dynamic_z_passed": None,
+            "entry_candidate_long": None,
+            "entry_candidate_short": None,
+            "entry_blocked_by_band": None,
+            "entry_blocked_by_regime_policy": None,
+        }
 
         def _emit_recheck_eval(
             *,
@@ -1751,6 +1766,7 @@ class VWAPMeanReversion(BaseStrategy):
                 "promote_override_scope": promote_override_meta.get("scope_reason"),
                 "promote_override_candidate": promote_override_meta.get("candidate"),
                 "promote_override_applied": promote_override_meta.get("applied"),
+                "gate_telemetry": dict(gate_telemetry),
             }
             try:
                 logger.info("mr_recheck_eval %s", json.dumps(out, ensure_ascii=True, sort_keys=True))
@@ -1793,6 +1809,7 @@ class VWAPMeanReversion(BaseStrategy):
                         "rearm_reason": "rsi_router.deferral_cancelled",
                         "reason_code": router_reason_code,
                         "rsi_zone_snapshot": dict(rsi_zone_snapshot) if isinstance(rsi_zone_snapshot, dict) else None,
+                        "gate_telemetry": dict(gate_telemetry),
                     }
                     if isinstance(eval_out, dict):
                         decision_meta.setdefault("mr_recheck_eval", eval_out)
@@ -2220,9 +2237,15 @@ class VWAPMeanReversion(BaseStrategy):
                 required_z = max(required_z, 1.60)
             elif float(adx_val) >= 25.0:
                 required_z = max(required_z, float(self._high_adx_z_threshold))
+        gate_telemetry["dynamic_z_required"] = float(required_z)
 
         dynamic_z_skip_touch_recheck = bool(is_recheck and fast_watch_touch_confirmed)
         if z_val is not None and math.isfinite(z_val):
+            z_abs = abs(float(z_val))
+            gate_telemetry["dynamic_z_abs"] = float(z_abs)
+            gate_telemetry["dynamic_z_passed"] = bool(
+                guard_state_pre == "ARMED" or dynamic_z_skip_touch_recheck or z_abs >= float(required_z)
+            )
             if dynamic_z_skip_touch_recheck and guard_state_pre != "ARMED" and abs(float(z_val)) < required_z:
                 logger.info(
                     "[MeanReversion] Dynamic Z bypass %s: z=%.2f required=%.2f (touch_confirmed recheck)",
@@ -2231,6 +2254,7 @@ class VWAPMeanReversion(BaseStrategy):
                     float(required_z),
                 )
             elif guard_state_pre != "ARMED" and abs(float(z_val)) < required_z:
+                gate_telemetry["dynamic_z_passed"] = False
                 logger.info(
                     "[MeanReversion] Dynamic Z veto %s: z=%.2f required=%.2f adx=%.2f",
                     symbol,
@@ -2605,7 +2629,13 @@ class VWAPMeanReversion(BaseStrategy):
             rejection_meta=rejection_meta if isinstance(rejection_meta, dict) else None,
         )
 
-        if in_band and not (entry_long or entry_short) and not touch_entry_allowed and not promotion_override:
+        gate_telemetry["entry_candidate_long"] = bool(entry_long)
+        gate_telemetry["entry_candidate_short"] = bool(entry_short)
+        gate_telemetry["entry_blocked_by_regime_policy"] = False
+        band_blocked = bool(in_band and not (entry_long or entry_short) and not touch_entry_allowed and not promotion_override)
+        gate_telemetry["entry_blocked_by_band"] = bool(band_blocked)
+
+        if band_blocked:
             if parent_pending_id:
                 logger.info(
                     "[MeanReversion] Recheck context; skipping soft deferral near-miss for %s (parent_pending_id=%s)",
@@ -2689,6 +2719,7 @@ class VWAPMeanReversion(BaseStrategy):
                         "touch_confirmed": bool(fast_watch_touch_confirmed),
                         "allow_touch_entry": bool(allow_touch_entry),
                         "promotion_override": dict(promote_override_meta),
+                        "gate_telemetry": dict(gate_telemetry),
                     }
                     if isinstance(eval_out, dict):
                         decision_meta.setdefault("mr_recheck_eval", eval_out)
@@ -2810,6 +2841,7 @@ class VWAPMeanReversion(BaseStrategy):
                             "upper": upper,
                             "vwap": vwap_target,
                             "adx": adx_val,
+                            "gate_telemetry": dict(gate_telemetry),
                             "threshold": threshold,
                             "near": "lower" if choose_lower else "upper",
                             "trigger_price": trigger_price,
@@ -3068,6 +3100,7 @@ class VWAPMeanReversion(BaseStrategy):
                                 regime_policy_size_mult *= float(rising_adx_size_mult)
 
                 if block_reason:
+                    gate_telemetry["entry_blocked_by_regime_policy"] = True
                     logger.info(
                         "[MeanReversion] Regime policy veto %s: reason=%s trend=%s adx=%.2f shock_state=%s shock_score=%s",
                         symbol,
@@ -3182,6 +3215,7 @@ class VWAPMeanReversion(BaseStrategy):
                         regime_policy_size_mult = float(short_size_mult)
 
                 if block_reason:
+                    gate_telemetry["entry_blocked_by_regime_policy"] = True
                     logger.info(
                         "[MeanReversion] Regime policy veto %s: reason=%s trend=%s adx=%.2f shock_state=%s shock_score=%s",
                         symbol,
@@ -3230,6 +3264,7 @@ class VWAPMeanReversion(BaseStrategy):
                 f"ADX {adx_val:.1f} < {eff_adx_threshold:.1f})"
             )
         else:
+            gate_telemetry["entry_blocked_by_band"] = True
             logger.info(
                 f"[MeanReversion] Price within bands for {symbol}. "
                 f"px={price:.4f}, lower={lower:.4f}, upper={upper:.4f}, "
@@ -3522,6 +3557,7 @@ class VWAPMeanReversion(BaseStrategy):
             meta_data["vsa_shadow"] = vsa_shadow_meta
         if is_recheck or bool(promote_override_meta.get("candidate")):
             meta_data["promotion_override"] = dict(promote_override_meta)
+        meta_data["gate_telemetry"] = dict(gate_telemetry)
         meta_data.setdefault(
             "price_meta",
             {

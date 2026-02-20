@@ -337,7 +337,19 @@ def test_normalize_rollout_canary_symbols_repairs_mapping_tokens():
                 "rollout": {
                     "canary_symbols": [{"BTC/USDT": "USDT"}],
                 }
-            }
+            },
+            "rsi_zone_router": {
+                "transition": {
+                    "shock_override": {
+                        "canary_symbols": [{"BTC/USDT": "USDT"}],
+                    }
+                }
+            },
+            "shock_breakdown_short": {
+                "rollout": {
+                    "canary_symbols": [{"BTC/USDT": "USDT"}],
+                }
+            },
         },
         "signals": {
             "directional_bias": {
@@ -352,6 +364,11 @@ def test_normalize_rollout_canary_symbols_repairs_mapping_tokens():
     loader._normalize_rollout_canary_symbols(cfg)
 
     assert cfg["strategies"]["level_zone_router"]["rollout"]["canary_symbols"] == ["BTC/USDT:USDT"]
+    assert (
+        cfg["strategies"]["rsi_zone_router"]["transition"]["shock_override"]["canary_symbols"]
+        == ["BTC/USDT:USDT"]
+    )
+    assert cfg["strategies"]["shock_breakdown_short"]["rollout"]["canary_symbols"] == ["BTC/USDT:USDT"]
     assert cfg["signals"]["directional_bias"]["rollout"]["canary_symbols"] == ["BTC/USDT:USDT"]
 
 

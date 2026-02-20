@@ -276,3 +276,157 @@ def test_is_strategy_allowed_mr_falls_back_to_legacy_zone_when_thresholds_missin
 
     assert allowed is True
     assert reason == "rsi_router.allowed"
+
+
+def test_is_strategy_allowed_shock_breakdown_short_exempt_from_transition_no_trade():
+    snapshot = {
+        "zone": RsiZone.TRANSITION_HIGH.value,
+        "shock_state": "ARMED",
+        "shock_score": 0.82,
+    }
+    cfg = {
+        "enabled": True,
+        "transition": {"no_trade_new_entry": True},
+    }
+
+    allowed, reason = is_strategy_allowed("shock_breakdown_short", "short", snapshot, cfg)
+
+    assert allowed is True
+    assert reason == "rsi_router.transition_exempt_strategy"
+
+
+def test_is_strategy_allowed_sbs_alias_exempt_from_transition_no_trade():
+    snapshot = {
+        "zone": RsiZone.TRANSITION_LOW.value,
+        "shock_state": "ARMED",
+        "shock_score": 0.79,
+    }
+    cfg = {
+        "enabled": True,
+        "transition": {"no_trade_new_entry": True},
+    }
+
+    allowed, reason = is_strategy_allowed("sbs", "short", snapshot, cfg)
+
+    assert allowed is True
+    assert reason == "rsi_router.transition_exempt_strategy"
+
+
+def test_is_strategy_allowed_transition_shock_override_enforce_allows_adaptive_str():
+    snapshot = {
+        "symbol": "BTC/USDT:USDT",
+        "zone": RsiZone.TRANSITION_HIGH.value,
+        "shock_state": "ARMED",
+        "shock_score": 0.91,
+        "regime_adx": 31.0,
+    }
+    cfg = {
+        "enabled": True,
+        "transition": {
+            "no_trade_new_entry": True,
+            "shock_override": {
+                "enabled": True,
+                "mode": "enforce",
+                "canary_symbols": ["*"],
+                "allow_strategies": ["adaptive_str"],
+                "state": "ARMED",
+                "min_score": 0.60,
+                "min_adx": 25.0,
+            },
+        },
+    }
+
+    allowed, reason = is_strategy_allowed("adaptive_str", "short", snapshot, cfg)
+
+    assert allowed is True
+    assert reason == "rsi_router.transition_shock_override"
+
+
+def test_is_strategy_allowed_transition_shock_override_observe_reports_would_override():
+    snapshot = {
+        "symbol": "BTC/USDT:USDT",
+        "zone": RsiZone.TRANSITION_HIGH.value,
+        "shock_state": "ARMED",
+        "shock_score": 0.88,
+        "regime_adx": 29.0,
+    }
+    cfg = {
+        "enabled": True,
+        "transition": {
+            "no_trade_new_entry": True,
+            "shock_override": {
+                "enabled": True,
+                "mode": "observe",
+                "canary_symbols": ["*"],
+                "allow_strategies": ["adaptive_str"],
+                "state": "ARMED",
+                "min_score": 0.60,
+                "min_adx": 25.0,
+            },
+        },
+    }
+
+    allowed, reason = is_strategy_allowed("adaptive_str", "short", snapshot, cfg)
+
+    assert allowed is False
+    assert reason == "rsi_router.observe_would_override_transition"
+
+
+def test_is_strategy_allowed_transition_shock_override_canary_blocks_non_canary_symbol():
+    snapshot = {
+        "symbol": "BTC/USDT:USDT",
+        "zone": RsiZone.TRANSITION_HIGH.value,
+        "shock_state": "ARMED",
+        "shock_score": 0.95,
+        "regime_adx": 30.0,
+    }
+    cfg = {
+        "enabled": True,
+        "transition": {
+            "no_trade_new_entry": True,
+            "shock_override": {
+                "enabled": True,
+                "mode": "enforce",
+                "canary_symbols": ["ETH/USDT:USDT"],
+                "allow_strategies": ["adaptive_str"],
+                "state": "ARMED",
+                "min_score": 0.60,
+                "min_adx": 20.0,
+            },
+        },
+    }
+
+    allowed, reason = is_strategy_allowed("adaptive_str", "short", snapshot, cfg)
+
+    assert allowed is False
+    assert reason == "rsi_router.transition_no_trade"
+
+
+def test_is_strategy_allowed_transition_shock_override_honors_min_adx_gate():
+    snapshot = {
+        "symbol": "BTC/USDT:USDT",
+        "zone": RsiZone.TRANSITION_HIGH.value,
+        "shock_state": "ARMED",
+        "shock_score": 0.95,
+        "regime_adx": 21.0,
+    }
+    cfg = {
+        "enabled": True,
+        "transition": {
+            "no_trade_new_entry": True,
+            "shock_override": {
+                "enabled": True,
+                "mode": "enforce",
+                "canary_symbols": ["*"],
+                "allow_strategies": ["adaptive_str"],
+                "state": "ARMED",
+                "min_score": 0.60,
+                "min_adx": 25.0,
+            },
+        },
+    }
+
+    allowed, reason = is_strategy_allowed("adaptive_str", "short", snapshot, cfg)
+
+    assert allowed is False
+    assert reason == "rsi_router.transition_no_trade"

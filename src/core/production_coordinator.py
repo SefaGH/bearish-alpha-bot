@@ -940,6 +940,10 @@ class ProductionCoordinator:
         regime_data: Optional[Dict[str, Any]],
         strategies: Dict[str, Any],
         router_cfg: Dict[str, Any],
+        shock_snapshot: Optional[Dict[str, Any]] = None,
+        shock_state: Optional[Any] = None,
+        shock_score: Optional[Any] = None,
+        regime_adx: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         if not isinstance(router_cfg, dict) or not bool(router_cfg.get("enabled", False)):
             return None
@@ -960,7 +964,42 @@ class ProductionCoordinator:
             str_strategy=str_strategy,
             router_cfg=router_cfg,
         )
-        return rsi_snapshot_to_dict(snapshot)
+        payload = rsi_snapshot_to_dict(snapshot)
+        if not isinstance(payload, dict):
+            return payload
+
+        def _coerce_finite(value: Any) -> Optional[float]:
+            try:
+                parsed = float(value)
+            except Exception:
+                return None
+            if not math.isfinite(parsed):
+                return None
+            return float(parsed)
+
+        shock_payload = shock_snapshot if isinstance(shock_snapshot, dict) else {}
+        effective_shock_state = shock_state if shock_state is not None else shock_payload.get("state")
+        if effective_shock_state is not None:
+            try:
+                payload["shock_state"] = str(effective_shock_state)
+            except Exception:
+                payload["shock_state"] = effective_shock_state
+
+        effective_shock_score = _coerce_finite(shock_score)
+        if effective_shock_score is None:
+            effective_shock_score = _coerce_finite(shock_payload.get("shock_score"))
+        if effective_shock_score is not None:
+            payload["shock_score"] = float(effective_shock_score)
+
+        effective_regime_adx = _coerce_finite(regime_adx)
+        if effective_regime_adx is None and isinstance(regime_data, dict):
+            effective_regime_adx = _coerce_finite(regime_data.get("trend_strength"))
+            if effective_regime_adx is None:
+                effective_regime_adx = _coerce_finite(regime_data.get("adx"))
+        if effective_regime_adx is not None:
+            payload["regime_adx"] = float(effective_regime_adx)
+
+        return payload
 
     def _build_symbol_level_zone_snapshot(
         self,
@@ -2059,6 +2098,7 @@ class ProductionCoordinator:
                     regime_data=regime_data,
                     strategies=strategies_map,
                     router_cfg=rsi_router_cfg,
+                    shock_snapshot=shock_snapshot if isinstance(shock_snapshot, dict) else None,
                 )
                 if rsi_zone_snapshot is None:
                     logger.warning(
@@ -2873,6 +2913,7 @@ class ProductionCoordinator:
             )
 
             regime_data = None
+            shock_snapshot = None
             shock_state = None
             shock_score = None
             router_df_slow = None
@@ -3096,6 +3137,7 @@ class ProductionCoordinator:
                                     try:
                                         snap = instance.get_dyn_gate_snapshot(symbol)
                                         if isinstance(snap, dict):
+                                            shock_snapshot = snap
                                             shock_state = snap.get("state")
                                             shock_score = snap.get("shock_score")
                                     except Exception:
@@ -3203,6 +3245,7 @@ class ProductionCoordinator:
                                     try:
                                         snap = instance.get_dyn_gate_snapshot(symbol)
                                         if isinstance(snap, dict):
+                                            shock_snapshot = snap
                                             shock_state = snap.get("state")
                                             shock_score = snap.get("shock_score")
                                     except Exception:
@@ -3259,6 +3302,9 @@ class ProductionCoordinator:
                     regime_data=regime_data,
                     strategies=strategies,
                     router_cfg=rsi_router_cfg,
+                    shock_snapshot=shock_snapshot if isinstance(shock_snapshot, dict) else None,
+                    shock_state=shock_state,
+                    shock_score=shock_score,
                 )
                 if rsi_zone_snapshot is None:
                     logger.warning(

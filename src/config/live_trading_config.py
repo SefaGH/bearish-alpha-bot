@@ -182,6 +182,8 @@ class LiveTradingConfiguration:
         'strategies.level_zone_router.rollout.canary_symbols',
         'signals.directional_bias.rollout.canary_symbols',
         'strategies.mean_reversion.fast_watch.promote_override.canary_symbols',
+        'strategies.rsi_zone_router.transition.shock_override.canary_symbols',
+        'strategies.shock_breakdown_short.rollout.canary_symbols',
     )
 
     # ------------------------------------------------------------------

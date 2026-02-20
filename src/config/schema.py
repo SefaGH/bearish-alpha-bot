@@ -149,6 +149,202 @@ def _validate_promote_override_rollout(config_data: Dict[str, Any]) -> List[Tupl
     return errors
 
 
+def _validate_mean_reversion_thresholds(config_data: Dict[str, Any]) -> List[Tuple[str, str]]:
+    errors: List[Tuple[str, str]] = []
+    strategies = config_data.get("strategies")
+    if not isinstance(strategies, dict):
+        return errors
+
+    mr_cfg = strategies.get("mean_reversion")
+    if mr_cfg is None:
+        return errors
+    if not isinstance(mr_cfg, dict):
+        errors.append(("strategies.mean_reversion", "must be a mapping/object"))
+        return errors
+
+    for key in ("high_adx_z_threshold", "high_adx_z_threshold_floor"):
+        raw = mr_cfg.get(key)
+        if raw is None:
+            continue
+        path = f"strategies.mean_reversion.{key}"
+        try:
+            value = float(raw)
+        except Exception:
+            errors.append((path, "must be a finite number"))
+            continue
+        if not math.isfinite(value):
+            errors.append((path, "must be a finite number"))
+            continue
+        if value <= 0:
+            errors.append((path, "must be > 0"))
+
+    return errors
+
+
+def _validate_shock_breakdown_short(config_data: Dict[str, Any]) -> List[Tuple[str, str]]:
+    errors: List[Tuple[str, str]] = []
+    strategies = config_data.get("strategies")
+    if not isinstance(strategies, dict):
+        return errors
+
+    sbs_cfg = strategies.get("shock_breakdown_short")
+    if sbs_cfg is None:
+        return errors
+    if not isinstance(sbs_cfg, dict):
+        errors.append(("strategies.shock_breakdown_short", "must be a mapping/object"))
+        return errors
+
+    bool_keys = ("enabled",)
+    for key in bool_keys:
+        raw = sbs_cfg.get(key)
+        if raw is None:
+            continue
+        if not isinstance(raw, bool):
+            errors.append((f"strategies.shock_breakdown_short.{key}", "must be a boolean"))
+
+    timeframe = sbs_cfg.get("timeframe")
+    if timeframe is not None:
+        if not isinstance(timeframe, str) or not str(timeframe).strip():
+            errors.append(("strategies.shock_breakdown_short.timeframe", "must be a non-empty string"))
+
+    shock_state = sbs_cfg.get("shock_state")
+    if shock_state is not None and not isinstance(shock_state, str):
+        errors.append(("strategies.shock_breakdown_short.shock_state", "must be a string"))
+
+    shock_states = sbs_cfg.get("shock_states")
+    shock_states_path = "strategies.shock_breakdown_short.shock_states"
+    if shock_states is not None:
+        if isinstance(shock_states, str):
+            tokens = [part.strip() for part in shock_states.split(",") if part.strip()]
+            if shock_states.strip() and not tokens:
+                errors.append((shock_states_path, "CSV string must contain at least one non-empty state token"))
+        elif isinstance(shock_states, (list, tuple, set)):
+            has_any = False
+            for idx, token in enumerate(shock_states):
+                token_norm = str(token).strip() if token is not None else ""
+                if not token_norm:
+                    errors.append((f"{shock_states_path}[{idx}]", "must be a non-empty string state token"))
+                    continue
+                has_any = True
+            if not has_any:
+                errors.append((shock_states_path, "must contain at least one state token"))
+        else:
+            errors.append((shock_states_path, "must be list[str] or CSV string"))
+
+    float_ranges = {
+        "min_shock_score": (0.0, 1.0, True, True),
+        "breakdown_confirm_bps": (0.0, None, True, False),
+        "min_momentum_pct": (0.0, None, True, False),
+        "min_volume_mult": (0.0, None, False, False),
+        "take_profit_pct": (0.0, None, False, False),
+        "stop_loss_pct": (0.0, None, False, False),
+    }
+    for key, (min_v, max_v, min_inclusive, max_inclusive) in float_ranges.items():
+        raw = sbs_cfg.get(key)
+        if raw is None:
+            continue
+        path = f"strategies.shock_breakdown_short.{key}"
+        try:
+            val = float(raw)
+        except Exception:
+            errors.append((path, "must be a finite number"))
+            continue
+        if not math.isfinite(val):
+            errors.append((path, "must be a finite number"))
+            continue
+        if min_v is not None:
+            if min_inclusive:
+                if val < float(min_v):
+                    errors.append((path, f"must be >= {min_v}"))
+            else:
+                if val <= float(min_v):
+                    errors.append((path, f"must be > {min_v}"))
+        if max_v is not None:
+            if max_inclusive:
+                if val > float(max_v):
+                    errors.append((path, f"must be <= {max_v}"))
+            else:
+                if val >= float(max_v):
+                    errors.append((path, f"must be < {max_v}"))
+
+    int_min = {
+        "breakdown_lookback_bars": 2,
+        "momentum_lookback_bars": 1,
+        "volume_ma_window": 2,
+        "cooldown_seconds": 0,
+    }
+    for key, min_v in int_min.items():
+        raw = sbs_cfg.get(key)
+        if raw is None:
+            continue
+        path = f"strategies.shock_breakdown_short.{key}"
+        try:
+            val = int(float(raw))
+        except Exception:
+            errors.append((path, "must be an integer"))
+            continue
+        if val < int(min_v):
+            errors.append((path, f"must be >= {min_v}"))
+
+    rollout_cfg = sbs_cfg.get("rollout")
+    rollout_path = "strategies.shock_breakdown_short.rollout"
+    if rollout_cfg is not None and not isinstance(rollout_cfg, dict):
+        errors.append((rollout_path, "must be a mapping/object"))
+    elif isinstance(rollout_cfg, dict):
+        raw_mode = rollout_cfg.get("mode")
+        if raw_mode is not None:
+            if not isinstance(raw_mode, str):
+                errors.append((f"{rollout_path}.mode", "must be one of: enforce|observe|off|disabled"))
+            else:
+                mode_norm = raw_mode.strip().lower()
+                if mode_norm not in {"enforce", "observe", "off", "disabled"}:
+                    errors.append(
+                        (
+                            f"{rollout_path}.mode",
+                            f"invalid value '{raw_mode}'; allowed: enforce|observe|off|disabled",
+                        )
+                    )
+        canary_symbols = rollout_cfg.get("canary_symbols")
+        canary_path = f"{rollout_path}.canary_symbols"
+        if canary_symbols is not None:
+            if isinstance(canary_symbols, str):
+                tokens = [part.strip() for part in canary_symbols.split(",") if part.strip()]
+                if canary_symbols.strip() and not tokens:
+                    errors.append((canary_path, "CSV string must contain at least one non-empty symbol token"))
+                for idx, token in enumerate(tokens):
+                    if not _is_valid_canary_symbol_token(token):
+                        errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+            elif isinstance(canary_symbols, (list, tuple, set)):
+                for idx, token in enumerate(canary_symbols):
+                    token_norm = _normalize_canary_symbol_token(token)
+                    if token_norm is None:
+                        errors.append((f"{canary_path}[{idx}]", "must be a string symbol token"))
+                        continue
+                    if not _is_valid_canary_symbol_token(token_norm):
+                        errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+            else:
+                errors.append((canary_path, "must be list[str] or CSV string"))
+
+    exit_cfg = sbs_cfg.get("exit_settings")
+    exit_path = "strategies.shock_breakdown_short.exit_settings"
+    if exit_cfg is not None and not isinstance(exit_cfg, dict):
+        errors.append((exit_path, "must be a mapping/object"))
+    elif isinstance(exit_cfg, dict):
+        raw_max_hold = exit_cfg.get("max_hold_seconds")
+        if raw_max_hold is not None:
+            try:
+                max_hold = float(raw_max_hold)
+            except Exception:
+                errors.append((f"{exit_path}.max_hold_seconds", "must be a finite number"))
+            else:
+                if not math.isfinite(max_hold):
+                    errors.append((f"{exit_path}.max_hold_seconds", "must be a finite number"))
+                elif max_hold <= 0:
+                    errors.append((f"{exit_path}.max_hold_seconds", "must be > 0"))
+
+    return errors
+
+
 def _validate_rsi_zone_router(config_data: Dict[str, Any]) -> List[Tuple[str, str]]:
     errors: List[Tuple[str, str]] = []
     strategies = config_data.get("strategies")
@@ -257,6 +453,103 @@ def _validate_rsi_zone_router(config_data: Dict[str, Any]) -> List[Tuple[str, st
                         errors.append((f"{mismatch_override_path}.min_penetration", "must be a finite number"))
                     elif penetration < 0:
                         errors.append((f"{mismatch_override_path}.min_penetration", "must be >= 0"))
+
+        shock_override_cfg = transition_cfg.get("shock_override")
+        shock_override_path = "strategies.rsi_zone_router.transition.shock_override"
+        if shock_override_cfg is not None and not isinstance(shock_override_cfg, dict):
+            errors.append((shock_override_path, "must be a mapping/object"))
+        elif isinstance(shock_override_cfg, dict):
+            raw_enabled = shock_override_cfg.get("enabled")
+            if raw_enabled is not None and not isinstance(raw_enabled, bool):
+                errors.append((f"{shock_override_path}.enabled", "must be a boolean"))
+
+            raw_mode = shock_override_cfg.get("mode")
+            if raw_mode is not None:
+                if not isinstance(raw_mode, str):
+                    errors.append((f"{shock_override_path}.mode", "must be one of: enforce|observe|off|disabled"))
+                else:
+                    mode_norm = raw_mode.strip().lower()
+                    if mode_norm not in {"enforce", "observe", "off", "disabled"}:
+                        errors.append(
+                            (
+                                f"{shock_override_path}.mode",
+                                f"invalid value '{raw_mode}'; allowed: enforce|observe|off|disabled",
+                            )
+                        )
+
+            canary_symbols = shock_override_cfg.get("canary_symbols")
+            canary_path = f"{shock_override_path}.canary_symbols"
+            if canary_symbols is not None:
+                if isinstance(canary_symbols, str):
+                    tokens = [part.strip() for part in canary_symbols.split(",") if part.strip()]
+                    if canary_symbols.strip() and not tokens:
+                        errors.append((canary_path, "CSV string must contain at least one non-empty symbol token"))
+                    for idx, token in enumerate(tokens):
+                        if not _is_valid_canary_symbol_token(token):
+                            errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+                elif isinstance(canary_symbols, (list, tuple, set)):
+                    for idx, token in enumerate(canary_symbols):
+                        token_norm = _normalize_canary_symbol_token(token)
+                        if token_norm is None:
+                            errors.append((f"{canary_path}[{idx}]", "must be a string symbol token"))
+                            continue
+                        if not _is_valid_canary_symbol_token(token_norm):
+                            errors.append((f"{canary_path}[{idx}]", f"invalid symbol token '{token}'"))
+                else:
+                    errors.append((canary_path, "must be list[str] or CSV string"))
+
+            allow_strategies = shock_override_cfg.get("allow_strategies")
+            allow_path = f"{shock_override_path}.allow_strategies"
+            if allow_strategies is not None:
+                if isinstance(allow_strategies, str):
+                    tokens = [part.strip() for part in allow_strategies.split(",") if part.strip()]
+                    if allow_strategies.strip() and not tokens:
+                        errors.append((allow_path, "CSV string must contain at least one non-empty strategy alias"))
+                    for idx, token in enumerate(tokens):
+                        if any(ch.isspace() for ch in token):
+                            errors.append((f"{allow_path}[{idx}]", f"invalid strategy alias '{token}'"))
+                elif isinstance(allow_strategies, (list, tuple, set)):
+                    has_any = False
+                    for idx, token in enumerate(allow_strategies):
+                        token_norm = str(token).strip() if token is not None else ""
+                        if not token_norm:
+                            errors.append((f"{allow_path}[{idx}]", "must be a non-empty string strategy alias"))
+                            continue
+                        has_any = True
+                        if any(ch.isspace() for ch in token_norm):
+                            errors.append((f"{allow_path}[{idx}]", f"invalid strategy alias '{token_norm}'"))
+                    if not has_any:
+                        errors.append((allow_path, "must contain at least one strategy alias"))
+                else:
+                    errors.append((allow_path, "must be list[str] or CSV string"))
+
+            raw_state = shock_override_cfg.get("state")
+            if raw_state is not None and not isinstance(raw_state, str):
+                errors.append((f"{shock_override_path}.state", "must be a string"))
+
+            raw_min_score = shock_override_cfg.get("min_score")
+            if raw_min_score is not None:
+                try:
+                    min_score = float(raw_min_score)
+                except Exception:
+                    errors.append((f"{shock_override_path}.min_score", "must be a finite number in [0, 1]"))
+                else:
+                    if not math.isfinite(min_score):
+                        errors.append((f"{shock_override_path}.min_score", "must be a finite number in [0, 1]"))
+                    elif min_score < 0.0 or min_score > 1.0:
+                        errors.append((f"{shock_override_path}.min_score", "must be in [0, 1]"))
+
+            raw_min_adx = shock_override_cfg.get("min_adx")
+            if raw_min_adx is not None:
+                try:
+                    min_adx = float(raw_min_adx)
+                except Exception:
+                    errors.append((f"{shock_override_path}.min_adx", "must be a finite number"))
+                else:
+                    if not math.isfinite(min_adx):
+                        errors.append((f"{shock_override_path}.min_adx", "must be a finite number"))
+                    elif min_adx < 0:
+                        errors.append((f"{shock_override_path}.min_adx", "must be >= 0"))
 
     return errors
 
@@ -611,6 +904,8 @@ def validate_config_safety(config_data: Dict[str, Any]) -> None:
 
     errors.extend(_iter_pct_violations(config_data))
     errors.extend(_validate_promote_override_rollout(config_data))
+    errors.extend(_validate_mean_reversion_thresholds(config_data))
+    errors.extend(_validate_shock_breakdown_short(config_data))
     errors.extend(_validate_rsi_zone_router(config_data))
     errors.extend(_validate_level_zone_router(config_data))
     errors.extend(_validate_directional_bias_config(config_data))

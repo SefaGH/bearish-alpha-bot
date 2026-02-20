@@ -65,6 +65,7 @@ from ml.strategy_optimizer import StrategyOptimizer
 from strategies.adaptive_ob import AdaptiveOversoldBounce
 from strategies.adaptive_str import AdaptiveShortTheRip
 from strategies.mean_reversion import VWAPMeanReversion
+from strategies.shock_breakdown_short import ShockBreakdownShortStrategy
 from core.indicator_validator import IndicatorValidator
 
 # Debug modu ortam değişkenine göre log seviyesini ayarla
@@ -2256,6 +2257,21 @@ class LiveTradingLauncher:
 
             # VWAP Mean Reversion (strategies section)
             strategies_config = self.config.get('strategies', {}) if isinstance(self.config, dict) else {}
+
+            # Shock Breakdown Short (separate continuation path)
+            sbs_config = strategies_config.get('shock_breakdown_short', {})
+            if not isinstance(sbs_config, dict):
+                sbs_config = {}
+            if sbs_config.get('enabled', False):
+                try:
+                    logger.info("Initializing Shock Breakdown Short strategy...")
+                    sbs_strategy = ShockBreakdownShortStrategy(sbs_config)
+                    self.strategies['shock_breakdown_short'] = sbs_strategy
+                    logger.info("✓ Shock Breakdown Short strategy initialized")
+                    logger.info(f"  - SBS Config: { {k: v for k, v in sbs_config.items() if k != 'enabled'} }")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Shock Breakdown Short: {e}", exc_info=True)
+
             mr_config = strategies_config.get('mean_reversion', {})
             if mr_config.get('enabled', False):
                 try:
